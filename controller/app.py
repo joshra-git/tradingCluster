@@ -1,7 +1,6 @@
 import logging
 import uuid
 from datetime import datetime, timezone
-
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -11,18 +10,12 @@ import alpaca_client
 import k8s_client
 import tier_config
 import market_hours
-import market_hours
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("controller")
 
 app = Flask(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Agent-facing API. Agent pods ONLY ever call these two endpoints - they never
-# touch Postgres or Alpaca directly.
-# ---------------------------------------------------------------------------
 
 @app.route("/propose", methods=["POST"])
 def propose():
@@ -34,7 +27,6 @@ def propose():
 
     cfg = tier_config.load()
 
-    # attach a reference price so the risk layer can size the position correctly
     try:
         ref_price = alpaca_client.get_latest_price(body["symbol"])
     except Exception as e:
@@ -80,9 +72,47 @@ def propose():
     if filled_price:
         delta = sized_qty * filled_price * (1 if body["side"] == "sell" else -1)
         db.update_balance(agent_name, float(agent["current_balance"]) + delta)
-        db.apply_fill_to_position(agent["id"], body["symbol"], body["side"], sized_qty, filled_price, body.get("stop_loss_pct"))
+        db.apply_fill_to_position(agent["id"], body["symbol"], body["side"], sized_qty, filled_price,
+                                   body.get("stop_loss_pct"))
 
     return jsonify({"approved": True, "executed": True, "sizing_note": reason, "order": result}), 200
+
+
+@app.route("/screen", methods=["GET"])
+def screen():
+    cfg = tier_config.load()
+    try:
+        pool = db.persistent_candidates(
+            min_appearances=cfg["persistence_min_appearances"], lookback_batches=cfg["persistence_lookback"]
+        )
+        if not pool:
+            return jsonify({})
+        shortlist = alpaca_client.screen_universe(pool, lookback_days=cfg["trend_window_days"], top_n=cfg["screen_top_n"])
+        db.save_shortlist(shortlist)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+    return jsonify(shortlist)
+
+
+@app.route("/decision", methods=["POST"])
+def record_decision():
+    body = request.get_json(force=True)
+    agent = db.get_agent(body["agent_name"])
+    if agent is None:
+        return jsonify({"ok": False, "reason": "unknown agent"}), 404
+    db.record_decision(agent["id"], body["action"], body.get("symbol"), body.get("reasoning"))
+    return jsonify({"ok": True})
+
+
+@app.route("/discover-debug", methods=["GET"])
+def discover_debug():
+    try:
+        return jsonify({
+            "movers_raw": alpaca_client.fetch_movers(top=5),
+            "most_actives_raw": alpaca_client.fetch_most_actives(top=5),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
 
 
 @app.route("/market-data", methods=["GET"])
@@ -114,7 +144,6 @@ def heartbeat():
 
 @app.route("/capital/inject", methods=["POST"])
 def inject_capital():
-    """Manual endpoint: curl this when you add real money to the account."""
     amount = float(request.get_json(force=True)["amount"])
     db.set_pool_balance(db.get_pool_balance() + amount)
     db.log_capital_event(agent_id=None, event_type="injection", amount=amount)
@@ -138,12 +167,6 @@ def list_positions():
     return jsonify(db.list_open_positions())
 
 
-# ---------------------------------------------------------------------------
-# Reconcile loop - this is where scaling decisions actually happen.
-# Runs on a timer, not on every request, so config changes and balance
-# changes are picked up together on a predictable cadence.
-# ---------------------------------------------------------------------------
-
 def reconcile():
     cfg = tier_config.load()
     agents = db.list_active_agents()
@@ -154,7 +177,6 @@ def reconcile():
         min_capital = float(agent["min_capital"])
         floor = min_capital * cfg["cull_floor_fraction"]
 
-        # --- scale up: spawn siblings while there's enough profit above the ceiling ---
         while balance >= max_capital:
             child_name = f"{agent['name']}-{uuid.uuid4().hex[:6]}"
             try:
@@ -166,7 +188,6 @@ def reconcile():
                 log.error(f"spawn failed for {agent['name']}: {e}")
                 break
 
-        # --- scale down: cull agents that have dropped near zero ---
         if balance <= floor:
             log.info(f"culling {agent['name']} at balance {balance} (floor {floor})")
             db.set_status(agent["name"], "culled")
@@ -174,7 +195,6 @@ def reconcile():
             db.log_capital_event(agent["id"], "cull_return", balance)
             k8s_client.delete_agent_pod(agent["name"])
 
-    # --- deploy pool capital toward agents that are actually trending up ---
     pool = db.get_pool_balance()
     if pool >= cfg["min_capital"]:
         trending = [a for a in agents
@@ -195,7 +215,6 @@ def reconcile():
                         log.error(f"pool allocation failed for {agent['name']}: {e}")
             db.set_pool_balance(pool)
 
-    # --- sanity check: does the ledger's total match what Alpaca actually holds? ---
     try:
         ledger_total = sum(float(a["current_balance"]) for a in agents) + float(db.get_pool_balance())
         account = alpaca_client.get_account()
@@ -207,9 +226,6 @@ def reconcile():
 
 
 def bootstrap():
-    """Runs once at Controller startup. If no agents exist yet, reads the REAL Alpaca
-    account balance and splits it across initial_pod_count agents at min_capital each.
-    Safe to run on every restart - it's a no-op once any agent exists."""
     if db.agent_count() > 0:
         log.info("agents already exist in the ledger, skipping auto-bootstrap")
         return
@@ -243,12 +259,27 @@ def bootstrap():
             log.error(f"bootstrap: failed to create {name}, continuing with remaining agents: {e}")
 
 
+def run_discovery_scan():
+    cfg = tier_config.load()
+    try:
+        candidates = alpaca_client.discover_candidates(min_price=cfg["min_price_floor"])
+        batch_id = db.record_market_scan(candidates)
+        log.info(f"discovery scan {batch_id}: {len(candidates)} candidates recorded")
+    except Exception as e:
+        log.error(f"discovery scan failed: {e}")
+
+
 if __name__ == "__main__":
     cfg = tier_config.load()
     db.ensure_usage_table()
     db.ensure_positions_table()
+    db.ensure_market_scans_table()
+    db.ensure_decisions_table()
+    db.ensure_shortlist_cache_table()
     bootstrap()
     scheduler = BackgroundScheduler()
     scheduler.add_job(reconcile, "interval", seconds=cfg["reconcile_interval_seconds"])
+    scheduler.add_job(run_discovery_scan, "interval", seconds=cfg["discovery_interval_seconds"],
+                       next_run_time=datetime.now())
     scheduler.start()
     app.run(host="0.0.0.0", port=8080)

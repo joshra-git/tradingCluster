@@ -17,10 +17,8 @@ log = logging.getLogger("agent")
 
 AGENT_NAME = os.environ["AGENT_NAME"]
 CONTROLLER_URL = os.environ["CONTROLLER_URL"]
-SYMBOLS = os.environ.get("STRATEGY_SYMBOLS", "SPY,QQQ").split(",")
 CYCLE_SECONDS = int(os.environ.get("CYCLE_SECONDS", "300"))
-OFF_PEAK_CYCLE_SECONDS = int(os.environ.get("OFF_PEAK_CYCLE_SECONDS", "3600"))            # market-hours cadence: 5 min
-OFF_PEAK_CYCLE_SECONDS = int(os.environ.get("OFF_PEAK_CYCLE_SECONDS", "3600"))  # off-peak cadence: 1 hour
+OFF_PEAK_CYCLE_SECONDS = int(os.environ.get("OFF_PEAK_CYCLE_SECONDS", "3600"))
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -49,7 +47,9 @@ def get_my_status():
 
 def ask_claude(status, market_snapshot):
     prompt = f"""You are managing a swing-trading position with ${status['current_balance']:.2f} available.
-Watchlist: {', '.join(SYMBOLS)}
+These are the top {len(market_snapshot)} candidates right now, screened by momentum from a much larger
+universe of symbols - each one already stood out enough to reach you, so treat them as pre-filtered,
+not as a random watchlist.
 Current market snapshot: {json.dumps(market_snapshot)}
 
 Decide whether to buy, sell, or hold this cycle. Favor swing positions (held
@@ -78,9 +78,7 @@ Report your decision using the trade_decision tool."""
 
 
 def fetch_market_snapshot():
-    # Routed through the Controller (not Alpaca directly) - agent pods never hold
-    # Alpaca credentials, and the NetworkPolicy doesn't let them reach Alpaca anyway.
-    resp = requests.get(f"{CONTROLLER_URL}/market-data", params={"symbols": ",".join(SYMBOLS)}, timeout=15)
+    resp = requests.get(f"{CONTROLLER_URL}/screen", timeout=20)
     resp.raise_for_status()
     return resp.json()
 
@@ -89,6 +87,16 @@ def run_cycle(status):
     snapshot = fetch_market_snapshot()
     decision = ask_claude(status, snapshot)
     log.info(f"decision: {decision}")
+
+    try:
+        requests.post(f"{CONTROLLER_URL}/decision", json={
+            "agent_name": AGENT_NAME,
+            "action": decision["action"],
+            "symbol": decision.get("symbol"),
+            "reasoning": decision.get("reasoning"),
+        }, timeout=10)
+    except Exception as e:
+        log.warning(f"failed to report decision: {e}")
 
     if decision["action"] == "hold":
         return
@@ -106,9 +114,10 @@ def run_cycle(status):
 
 
 if __name__ == "__main__":
-    log.info(f"agent {AGENT_NAME} starting, watchlist={SYMBOLS}")
+    log.info(f"agent {AGENT_NAME} starting - screening the full universe each cycle, top-N candidates via /screen")
+    RETRY_SECONDS = 30
     while True:
-        session = "closed"  # safe default if the status check itself fails
+        session = None
         try:
             status = get_my_status()
             session = status.get("market_session", "closed")
@@ -117,8 +126,11 @@ if __name__ == "__main__":
             else:
                 run_cycle(status)
         except Exception as e:
-            log.error(f"cycle failed, will retry next interval: {e}")
+            log.error(f"cycle failed: {e}")
 
-        sleep_for = CYCLE_SECONDS if session == "open" else OFF_PEAK_CYCLE_SECONDS
+        if session is None:
+            sleep_for = RETRY_SECONDS
+        else:
+            sleep_for = CYCLE_SECONDS if session == "open" else OFF_PEAK_CYCLE_SECONDS
         log.info(f"market session: {session} - sleeping {sleep_for}s")
         time.sleep(sleep_for)

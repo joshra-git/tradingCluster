@@ -4,11 +4,12 @@ database - agent pods never connect to it directly (enforced at the network
 policy level, not just by convention).
 """
 import os
+import uuid
 import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager
 
-DATABASE_URL = os.environ["DATABASE_URL"]  # postgres://user:pass@host:5432/dbname
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 
 @contextmanager
@@ -72,8 +73,6 @@ def heartbeat(name):
 
 
 def record_trade(agent_id, client_order_id, symbol, side, qty, stop_loss_pct, reasoning, status="proposed"):
-    """Insert is idempotent on client_order_id - a retried proposal with the same id
-    just returns the existing row instead of creating a duplicate."""
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
@@ -98,7 +97,6 @@ def update_trade_status(client_order_id, status, reject_reason=None, alpaca_orde
 
 
 def todays_trade_pnl(agent_id):
-    """Rough realized P&L for today, used by the daily-loss circuit breaker."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -112,8 +110,6 @@ def todays_trade_pnl(agent_id):
 
 
 def rolling_pnl_trend(agent_id, days):
-    """Sum of realized P&L over the trailing N days - a crude 'is this agent trending up' signal.
-    TODO: swap for a proper moving-average / drawdown-aware version once you have real trade history."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -128,10 +124,6 @@ def rolling_pnl_trend(agent_id, days):
 
 
 def account_day_trade_count(days=5):
-    """Rough same-day round-trip counter ACROSS ALL AGENTS, because the PDT rule applies to the
-    whole Alpaca account, not per pod. This is a simplification (a true day-trade is a matched
-    buy+sell of the same symbol same day) - good enough as an early-warning check, not a
-    substitute for reading Alpaca's own day_trade_count field on the account."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -271,9 +263,112 @@ def list_open_positions():
         return cur.fetchall()
 
 
+def ensure_market_scans_table():
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_scans (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                scan_batch UUID NOT NULL,
+                symbol TEXT NOT NULL,
+                source TEXT NOT NULL,
+                rank INT,
+                pct_change NUMERIC(10,4),
+                volume BIGINT,
+                price NUMERIC(14,4),
+                scanned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_market_scans_symbol ON market_scans(symbol)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_market_scans_batch ON market_scans(scan_batch)")
+
+
+def record_market_scan(candidates):
+    batch_id = str(uuid.uuid4())
+    with get_conn() as conn:
+        cur = conn.cursor()
+        for c in candidates:
+            cur.execute(
+                """INSERT INTO market_scans (scan_batch, symbol, source, rank, pct_change, volume, price)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (batch_id, c["symbol"], c["source"], c.get("rank"), c.get("pct_change"),
+                 c.get("volume"), c.get("price")),
+            )
+    return batch_id
+
+
+def persistent_candidates(min_appearances=2, lookback_batches=3):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            WITH recent_batches AS (
+                SELECT scan_batch, MIN(scanned_at) AS batch_time
+                FROM market_scans
+                GROUP BY scan_batch
+                ORDER BY batch_time DESC
+                LIMIT %s
+            )
+            SELECT symbol, COUNT(DISTINCT scan_batch) AS appearances
+            FROM market_scans
+            WHERE scan_batch IN (SELECT scan_batch FROM recent_batches)
+            GROUP BY symbol
+            HAVING COUNT(DISTINCT scan_batch) >= %s
+            ORDER BY appearances DESC
+        """, (lookback_batches, min_appearances))
+        return [row[0] for row in cur.fetchall()]
+
+
+def ensure_decisions_table():
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS decisions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                agent_id UUID NOT NULL REFERENCES agents(id),
+                action TEXT NOT NULL,
+                symbol TEXT,
+                reasoning TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+
+
+def record_decision(agent_id, action, symbol, reasoning):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO decisions (agent_id, action, symbol, reasoning) VALUES (%s, %s, %s, %s)",
+            (agent_id, action, symbol, reasoning),
+        )
+
+
+def ensure_shortlist_cache_table():
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS shortlist_cache (
+                symbol TEXT PRIMARY KEY,
+                price NUMERIC(14,4),
+                pct_change NUMERIC(10,4),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+
+
+def save_shortlist(shortlist_dict):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM shortlist_cache")
+        for sym, data in shortlist_dict.items():
+            pct_key = next((k for k in data if k.endswith("_change_pct")), None)
+            pct = data.get(pct_key) if pct_key else None
+            cur.execute(
+                "INSERT INTO shortlist_cache (symbol, price, pct_change) VALUES (%s, %s, %s)",
+                (sym, data.get("price"), pct),
+            )
+
+
 def spawn_sibling_transaction(parent_name, child_name, amount, strategy):
-    """Atomic debit-parent / credit-child / create-child-row. If this fails partway,
-    the whole transaction rolls back - you never end up with an orphaned credit."""
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT * FROM agents WHERE name = %s FOR UPDATE", (parent_name,))
