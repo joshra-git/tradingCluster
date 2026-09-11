@@ -1,0 +1,31 @@
+"""
+Reads the tier config from a mounted ConfigMap volume every time it's called
+(NOT cached at startup). ConfigMap volumes sync to disk periodically without a
+pod restart, so editing the ConfigMap and re-applying it changes behavior on
+the next reconcile pass with no redeploy needed.
+"""
+import os
+import yaml
+
+CONFIG_PATH = os.environ.get("TIER_CONFIG_PATH", "/etc/trading-config/config.yaml")
+
+DEFAULTS = {
+    "min_capital": 50,
+    "max_capital": 100,
+    "trend_window_days": 5,
+    "max_position_pct": 0.25,
+    "max_daily_loss_pct": 0.10,
+    "cull_floor_fraction": 0.2,   # kill an agent once it drops below this fraction of min_capital
+    "pdt_day_trade_limit": 3,
+    "initial_pod_count": 2,       # how many agents to auto-seed from the real Alpaca balance on first startup
+    "reconcile_interval_seconds": 60,
+}
+
+
+def load():
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        cfg = {}
+    return {**DEFAULTS, **cfg}

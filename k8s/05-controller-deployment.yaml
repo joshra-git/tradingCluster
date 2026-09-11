@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: controller
+  namespace: trading
+spec:
+  selector:
+    app: controller
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller
+  namespace: trading
+spec:
+  replicas: 1   # deliberately one - it's the single writer, see NetworkPolicy notes
+  selector:
+    matchLabels:
+      app: controller
+  template:
+    metadata:
+      labels:
+        app: controller
+    spec:
+      serviceAccountName: controller
+      containers:
+        - name: controller
+          image: trading-controller:latest   # built locally, loaded into kind/k3d - see README
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: NAMESPACE
+              value: trading
+            - name: AGENT_IMAGE
+              value: trading-agent:latest
+            - name: CONTROLLER_INTERNAL_URL
+              value: "http://controller.trading.svc.cluster.local:8080"
+            - name: ALPACA_PAPER
+              value: "true"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: trading-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://trading:$(POSTGRES_PASSWORD)@postgres.trading.svc.cluster.local:5432/trading"
+            - name: ALPACA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: trading-secrets
+                  key: ALPACA_API_KEY
+            - name: ALPACA_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: trading-secrets
+                  key: ALPACA_SECRET_KEY
+          volumeMounts:
+            - name: tier-config
+              mountPath: /etc/trading-config
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - name: tier-config
+          configMap:
+            name: trading-tier-config

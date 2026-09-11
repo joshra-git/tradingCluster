@@ -1,0 +1,95 @@
+# IMPORTANT LIMITATION: standard Kubernetes NetworkPolicy can only match on pod
+# selectors, namespace selectors, and IP/CIDR ranges - it CANNOT match on domain
+# name (e.g. "only allow traffic to api.anthropic.com"). That requires a CNI with
+# FQDN-aware policies, like Cilium's CiliumNetworkPolicy. On a default kind/k3d
+# cluster you don't have that, so "allow egress to Alpaca/Anthropic" below really
+# means "allow all external egress from this pod" - the real value these policies
+# give you on a stock cluster is locking down POD-TO-POD traffic (agents can't
+# reach Postgres, can't reach each other), which IS fully enforceable here.
+# If you want true FQDN-level egress control later, look at installing Cilium.
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: trading
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-controller-egress-external
+  namespace: trading
+spec:
+  podSelector:
+    matchLabels: { app: controller }
+  policyTypes: ["Egress"]
+  egress:
+    - {}   # unrestricted egress (Alpaca + Anthropic) - see FQDN note above
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-controller-to-postgres
+  namespace: trading
+spec:
+  podSelector:
+    matchLabels: { app: postgres }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: controller } }
+        - podSelector: { matchLabels: { app: dashboard } }
+      ports:
+        - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dashboard-egress-to-postgres
+  namespace: trading
+spec:
+  podSelector:
+    matchLabels: { app: dashboard }
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app: postgres } }
+      ports:
+        - port: 5432
+# Note what's NOT here: the dashboard has no egress rule to the internet and no
+# ingress rule accepting connections from agent pods or the outside world.
+# `kubectl port-forward` bypasses NetworkPolicy entirely (it doesn't traverse
+# the pod network the normal way), so you can still reach it from localhost.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agents-to-controller
+  namespace: trading
+spec:
+  podSelector:
+    matchLabels: { app: controller }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: trading-agent } }
+      ports:
+        - port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agent-egress-external
+  namespace: trading
+spec:
+  podSelector:
+    matchLabels: { app: trading-agent }
+  policyTypes: ["Egress"]
+  egress:
+    - {}   # needs to reach api.anthropic.com - same FQDN caveat as above
+# Note what's NOT here: agent pods have no NetworkPolicy allowing them to reach
+# postgres or to reach each other. That's the enforcement of "pods only talk to
+# the Controller" - it's not just application logic, the network blocks it too.

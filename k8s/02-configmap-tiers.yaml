@@ -1,0 +1,19 @@
+# This is the dial you turn as the system proves itself. Edit min_capital / max_capital
+# and re-apply this file - no redeploy needed, the Controller re-reads it every
+# reconcile pass (default every 60s, see reconcile_interval_seconds below).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trading-tier-config
+  namespace: trading
+data:
+  config.yaml: |
+    min_capital: 50000            # starting balance for a newly spawned agent
+    max_capital: 100000            # balance that triggers spawning a sibling
+    trend_window_days: 5          # lookback window for "is this agent trending up"
+    max_position_pct: 0.25        # max fraction of an agent's balance in one position
+    max_daily_loss_pct: 0.10      # per-agent daily circuit breaker
+    cull_floor_fraction: 0.2      # agent gets culled below this fraction of min_capital
+    pdt_day_trade_limit: 3
+    initial_pod_count: 2          # how many agents to auto-seed from the real account balance        # account-wide day-trade warning threshold
+    reconcile_interval_seconds: 60

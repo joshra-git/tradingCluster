@@ -1,0 +1,6 @@
+flask==3.0.3
+psycopg2-binary==2.9.9
+kubernetes==30.1.0
+alpaca-py==0.28.0
+pyyaml==6.0.1
+apscheduler==3.10.4
