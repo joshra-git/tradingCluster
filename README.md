@@ -148,4 +148,4 @@ risk, not yet implemented:
   and correctly said it wants more signal than this before committing capital
   confidently.
 
-### Peace.
+### Peace....
