@@ -147,3 +147,5 @@ risk, not yet implemented:
   no news/sentiment, no broader technical indicators. Claude has repeatedly
   and correctly said it wants more signal than this before committing capital
   confidently.
+
+### Peace.
