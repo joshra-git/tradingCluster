@@ -40,6 +40,9 @@ def _screener_headers():
 
 
 def fetch_movers(top=25):
+    """Real market-wide gainers/losers from Alpaca's own screener - not a hand-typed list.
+    Called directly via REST since exact SDK response field names aren't fully pinned down;
+    parsing below is defensive about which key names show up."""
     resp = requests.get(
         f"{DATA_BASE_URL}/v1beta1/screener/stocks/movers",
         headers=_screener_headers(), params={"top": top}, timeout=15,
@@ -64,7 +67,18 @@ def _first_present(d, keys):
     return None
 
 
+def _looks_like_derivative(symbol):
+    """Warrants, rights, and units trade under recognizable ticker patterns
+    (a dot suffix like .WS/.RT, or a trailing W) - these are NOT common stock,
+    they're speculative derivative instruments that make terrible 'promising
+    company' candidates even when they clear a price floor."""
+    return "." in symbol or symbol.endswith("W") or symbol.endswith("WS")
+
+
 def discover_candidates(min_price=5.0, top=25):
+    """One discovery pass across the real market: gainers, losers, and most-active
+    by volume. Applies a price floor and excludes warrant/rights tickers. This is
+    what replaces a hand-typed universe list - the market tells us what's moving."""
     results = []
 
     try:
@@ -74,7 +88,7 @@ def discover_candidates(min_price=5.0, top=25):
                 symbol = _first_present(item, ["symbol", "Symbol"])
                 price = _first_present(item, ["price", "last_price", "close", "Price"])
                 pct = _first_present(item, ["percent_change", "change_percent", "pct_change", "Change_percent"])
-                if not symbol or price is None or float(price) < min_price:
+                if not symbol or _looks_like_derivative(symbol) or price is None or float(price) < min_price:
                     continue
                 results.append({"symbol": symbol, "source": source, "rank": rank,
                                  "pct_change": pct, "price": price, "volume": None})
@@ -86,7 +100,7 @@ def discover_candidates(min_price=5.0, top=25):
         for rank, item in enumerate(actives.get("most_actives", []), start=1):
             symbol = _first_present(item, ["symbol", "Symbol"])
             volume = _first_present(item, ["volume", "trade_count", "Volume"])
-            if not symbol:
+            if not symbol or _looks_like_derivative(symbol):
                 continue
             results.append({"symbol": symbol, "source": "most_active", "rank": rank,
                              "pct_change": None, "price": None, "volume": volume})
@@ -106,15 +120,17 @@ def get_latest_price(symbol):
 
 
 def get_daily_snapshot(symbol, lookback_days=5):
+    """Latest price plus a rough recent trend - just enough for the agent to reason
+    about direction and momentum without holding any Alpaca credentials itself."""
     price = get_latest_price(symbol)
     req = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame.Day,
-        start=datetime.now() - timedelta(days=lookback_days * 3),
+        start=datetime.now() - timedelta(days=lookback_days * 3),  # buffer for weekends/holidays
         feed=DataFeed.IEX,
     )
     bars = data_client.get_stock_bars(req)[symbol]
-    bars = bars[-lookback_days:]
+    bars = bars[-lookback_days:]  # trim the buffer window back down to what was actually asked for
     if len(bars) >= 2:
         change_pct = (price - float(bars[0].close)) / float(bars[0].close) * 100
     else:
@@ -127,6 +143,8 @@ def get_daily_snapshot(symbol, lookback_days=5):
 
 
 def get_batch_quotes(symbols):
+    """One Alpaca call for many symbols, instead of one call per symbol.
+    Returns {symbol: price}, silently skipping symbols with no quote available."""
     req = StockLatestQuoteRequest(symbol_or_symbols=symbols, feed=DataFeed.IEX)
     quotes = data_client.get_stock_latest_quote(req)
     prices = {}
@@ -138,6 +156,7 @@ def get_batch_quotes(symbols):
 
 
 def get_batch_bars(symbols, lookback_days=5):
+    """One Alpaca call for many symbols' daily bars, instead of one call per symbol."""
     req = StockBarsRequest(
         symbol_or_symbols=symbols,
         timeframe=TimeFrame.Day,
@@ -157,6 +176,10 @@ def get_batch_bars(symbols, lookback_days=5):
 
 
 def screen_universe(symbols, lookback_days=5, top_n=5):
+    """Cheap, non-LLM screen across the whole universe: two batched Alpaca calls
+    total, regardless of how large the universe is. Ranks by 5-day momentum and
+    returns only the top N candidates - this is what keeps Claude's per-cycle
+    token cost flat even as the universe grows to 100+ symbols."""
     prices = get_batch_quotes(symbols)
     bars_by_symbol = get_batch_bars(symbols, lookback_days)
 
@@ -187,7 +210,7 @@ def submit_market_order(symbol, side, qty, client_order_id):
         qty=qty,
         side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
         time_in_force=TimeInForce.DAY,
-        client_order_id=client_order_id,
+        client_order_id=client_order_id,  # Alpaca de-dupes on this - safe to retry
     )
     result = trading_client.submit_order(order)
     return {

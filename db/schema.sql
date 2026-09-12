@@ -56,3 +56,25 @@ INSERT INTO unallocated_pool (id, balance) VALUES (1, 0) ON CONFLICT (id) DO NOT
 CREATE INDEX IF NOT EXISTS idx_trades_agent_id ON trades(agent_id);
 CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+
+-- Running position per (agent, symbol) - avoids re-deriving "what do we currently
+-- hold" by summing every historical trade on every read.
+CREATE TABLE IF NOT EXISTS positions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id        UUID NOT NULL REFERENCES agents(id),
+    symbol          TEXT NOT NULL,
+    qty             NUMERIC(14,4) NOT NULL DEFAULT 0,
+    avg_entry_price NUMERIC(14,4),
+    stop_loss_pct   NUMERIC(6,4),
+    opened_at       TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (agent_id, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS api_usage (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_name     TEXT NOT NULL,
+    input_tokens   INT NOT NULL,
+    output_tokens  INT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);

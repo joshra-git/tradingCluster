@@ -1,3 +1,9 @@
+"""
+Reads the tier config from a mounted ConfigMap volume every time it's called
+(NOT cached at startup). ConfigMap volumes sync to disk periodically without a
+pod restart, so editing the ConfigMap and re-applying it changes behavior on
+the next reconcile pass with no redeploy needed.
+"""
 import os
 import yaml
 
@@ -12,11 +18,11 @@ DEFAULTS = {
     "cull_floor_fraction": 0.2,
     "pdt_day_trade_limit": 3,
     "initial_pod_count": 2,
-    "screen_top_n": 5,
-    "min_price_floor": 5.0,
-    "persistence_min_appearances": 2,
-    "persistence_lookback": 3,
-    "discovery_interval_seconds": 900,
+    "screen_top_n": 5,                    # how many final candidates reach Claude each cycle
+    "min_price_floor": 5.0,               # excludes penny-stock traps from discovery
+    "persistence_min_appearances": 2,     # how many scans a symbol must appear in...
+    "persistence_lookback": 3,            # ...out of the last N scans, to count as real
+    "discovery_interval_seconds": 900,    # how often the real market gets scanned (15 min)
     "reconcile_interval_seconds": 60,
 }
 

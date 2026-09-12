@@ -17,8 +17,8 @@ log = logging.getLogger("agent")
 
 AGENT_NAME = os.environ["AGENT_NAME"]
 CONTROLLER_URL = os.environ["CONTROLLER_URL"]
-CYCLE_SECONDS = int(os.environ.get("CYCLE_SECONDS", "300"))
-OFF_PEAK_CYCLE_SECONDS = int(os.environ.get("OFF_PEAK_CYCLE_SECONDS", "3600"))
+CYCLE_SECONDS = int(os.environ.get("CYCLE_SECONDS", "300"))            # market-hours cadence: 5 min
+OFF_PEAK_CYCLE_SECONDS = int(os.environ.get("OFF_PEAK_CYCLE_SECONDS", "3600"))  # off-peak cadence: 1 hour
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -78,6 +78,9 @@ Report your decision using the trade_decision tool."""
 
 
 def fetch_market_snapshot():
+    # Screened server-side (see /screen on the Controller) - only the top-N
+    # momentum candidates from the full universe ever reach this agent, which
+    # is what keeps token cost flat regardless of how large the universe gets.
     resp = requests.get(f"{CONTROLLER_URL}/screen", timeout=20)
     resp.raise_for_status()
     return resp.json()
@@ -115,7 +118,7 @@ def run_cycle(status):
 
 if __name__ == "__main__":
     log.info(f"agent {AGENT_NAME} starting - screening the full universe each cycle, top-N candidates via /screen")
-    RETRY_SECONDS = 30
+    RETRY_SECONDS = 30  # a failed connection is a transient problem, not a market-hours signal
     while True:
         session = None
         try:
@@ -129,7 +132,7 @@ if __name__ == "__main__":
             log.error(f"cycle failed: {e}")
 
         if session is None:
-            sleep_for = RETRY_SECONDS
+            sleep_for = RETRY_SECONDS  # couldn't even reach the Controller - retry soon, don't wait an hour
         else:
             sleep_for = CYCLE_SECONDS if session == "open" else OFF_PEAK_CYCLE_SECONDS
         log.info(f"market session: {session} - sleeping {sleep_for}s")

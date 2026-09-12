@@ -187,6 +187,38 @@ TEMPLATE = """
   </section>
 
   <section>
+    <h2>Currently watching</h2>
+    <div class="chips">
+      {% for w in watching %}
+      <div class="chip" style="border-left-color: {{ 'var(--green)' if (w.pct_change or 0) >= 0 else 'var(--rose)' }};">
+        <div class="sym">{{ w.symbol }}</div>
+        <div class="name">${{ "%.2f"|format(w.price) if w.price else "-" }}</div>
+        <div class="desc">{{ "%.2f"|format(w.pct_change) if w.pct_change is not none else "-" }}% over the trend window</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if not watching %}<div class="empty">No shortlist yet &mdash; needs a few discovery scans and an agent cycle first</div>{% endif %}
+  </section>
+
+  <section>
+    <h2>What each agent is thinking</h2>
+    <div class="agent-cards">
+      {% for t in thinking %}
+      <div class="agent-card active">
+        <div class="name">{{ t.agent_name }}</div>
+        <div class="balance" style="font-size: 1.1rem;">
+          <span class="feed-side {{ t.action }}">{{ t.action }}</span>
+          {% if t.symbol %}<span class="sym" style="font-family: var(--mono); margin-left: 0.4rem;">{{ t.symbol }}</span>{% endif %}
+        </div>
+        <div class="meta" style="margin-top: 0.5rem; color: var(--text-dim); font-size: 0.78rem; line-height: 1.5;">{{ t.reasoning or "" }}</div>
+        <div class="meta" style="margin-top: 0.5rem;">as of {{ t.created_at.strftime("%H:%M:%S") }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if not thinking %}<div class="empty">No decisions recorded yet</div>{% endif %}
+  </section>
+
+  <section>
     <h2>Agents</h2>
     <div class="agent-cards">
       {% for a in agents %}
@@ -299,6 +331,22 @@ def dashboard():
         input_tok, output_tok = 0, 0
     claude_spend_today = (input_tok / 1_000_000 * PRICE_INPUT_PER_M) + (output_tok / 1_000_000 * PRICE_OUTPUT_PER_M)
 
+    try:
+        watching = query("SELECT * FROM shortlist_cache ORDER BY pct_change DESC NULLS LAST")
+    except Exception:
+        watching = []
+
+    try:
+        thinking = query("""
+            SELECT DISTINCT ON (a.id) a.name AS agent_name, d.action, d.symbol, d.reasoning, d.created_at
+            FROM decisions d
+            JOIN agents a ON a.id = d.agent_id
+            WHERE a.status = 'active'
+            ORDER BY a.id, d.created_at DESC
+        """)
+    except Exception:
+        thinking = []
+
     active_agents = [a for a in agents if a["status"] == "active"]
     total_balance = sum(float(a["current_balance"]) for a in active_agents) + float(pool)
 
@@ -306,8 +354,9 @@ def dashboard():
         TEMPLATE, agents=agents, trades=trades, agent_count=len(active_agents),
         total_balance=total_balance, pool_balance=float(pool), trades_today=trades_today,
         symbol_info=SYMBOL_INFO, claude_spend_today=claude_spend_today,
+        watching=watching, thinking=thinking,
     )
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8095)
+    app.run(host="0.0.0.0", port=8090)

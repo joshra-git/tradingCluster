@@ -9,7 +9,7 @@ import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+DATABASE_URL = os.environ["DATABASE_URL"]  # postgres://user:pass@host:5432/dbname
 
 
 @contextmanager
@@ -73,6 +73,8 @@ def heartbeat(name):
 
 
 def record_trade(agent_id, client_order_id, symbol, side, qty, stop_loss_pct, reasoning, status="proposed"):
+    """Insert is idempotent on client_order_id - a retried proposal with the same id
+    just returns the existing row instead of creating a duplicate."""
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
@@ -97,6 +99,7 @@ def update_trade_status(client_order_id, status, reject_reason=None, alpaca_orde
 
 
 def todays_trade_pnl(agent_id):
+    """Rough realized P&L for today, used by the daily-loss circuit breaker."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -110,6 +113,8 @@ def todays_trade_pnl(agent_id):
 
 
 def rolling_pnl_trend(agent_id, days):
+    """Sum of realized P&L over the trailing N days - a crude 'is this agent trending up' signal.
+    TODO: swap for a proper moving-average / drawdown-aware version once you have real trade history."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -124,6 +129,10 @@ def rolling_pnl_trend(agent_id, days):
 
 
 def account_day_trade_count(days=5):
+    """Rough same-day round-trip counter ACROSS ALL AGENTS, because the PDT rule applies to the
+    whole Alpaca account, not per pod. This is a simplification (a true day-trade is a matched
+    buy+sell of the same symbol same day) - good enough as an early-warning check, not a
+    substitute for reading Alpaca's own day_trade_count field on the account."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -215,6 +224,8 @@ def ensure_positions_table():
 
 
 def apply_fill_to_position(agent_id, symbol, side, qty, price, stop_loss_pct=None):
+    """Keeps a running position per (agent, symbol) so 'what do I currently hold'
+    is a direct read instead of summing every historical trade each time."""
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT * FROM positions WHERE agent_id = %s AND symbol = %s FOR UPDATE", (agent_id, symbol))
@@ -243,7 +254,7 @@ def apply_fill_to_position(agent_id, symbol, side, qty, price, stop_loss_pct=Non
                     )
         elif side == "sell":
             if pos is None:
-                return
+                return  # selling with no tracked position - nothing to reconcile against
             new_qty = float(pos["qty"]) - qty
             if new_qty <= 0.0001:
                 cur.execute("DELETE FROM positions WHERE id = %s", (pos["id"],))
@@ -284,6 +295,8 @@ def ensure_market_scans_table():
 
 
 def record_market_scan(candidates):
+    """One scan_batch id groups everything found in a single discovery pass,
+    so 'appeared in 2 of the last 3 scans' means 3 distinct passes, not 3 rows."""
     batch_id = str(uuid.uuid4())
     with get_conn() as conn:
         cur = conn.cursor()
@@ -298,6 +311,8 @@ def record_market_scan(candidates):
 
 
 def persistent_candidates(min_appearances=2, lookback_batches=3):
+    """The noise filter: only symbols that showed up in at least min_appearances
+    of the last lookback_batches distinct scans count as a real signal, not a blip."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -356,6 +371,9 @@ def ensure_shortlist_cache_table():
 
 
 def save_shortlist(shortlist_dict):
+    """Called whenever /screen actually computes a fresh shortlist - piggybacks on
+    that existing computation so the dashboard can read it cheaply without ever
+    triggering its own Alpaca calls just because someone loaded the page."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM shortlist_cache")
@@ -369,6 +387,8 @@ def save_shortlist(shortlist_dict):
 
 
 def spawn_sibling_transaction(parent_name, child_name, amount, strategy):
+    """Atomic debit-parent / credit-child / create-child-row. If this fails partway,
+    the whole transaction rolls back - you never end up with an orphaned credit."""
     with get_conn() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT * FROM agents WHERE name = %s FOR UPDATE", (parent_name,))
