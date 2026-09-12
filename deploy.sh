@@ -30,15 +30,22 @@ manifest = re.sub(
 open("k8s/03-postgres.yaml", "w").write(manifest)
 PY
 
-if [ ! -f k8s/01-secrets.yaml ]; then
-  echo "!! k8s/01-secrets.yaml not found."
+# Prefer whatever is already in the cluster - never overwrite working credentials.
+if kubectl -n trading get secret trading-secrets >/dev/null 2>&1; then
+  echo "==> Existing 'trading-secrets' found in the cluster, leaving it untouched"
+  APPLY_SECRETS=false
+elif [ -f k8s/01-secrets.yaml ]; then
+  echo "==> No secret in the cluster yet, applying k8s/01-secrets.yaml"
+  APPLY_SECRETS=true
+else
+  echo "!! No 'trading-secrets' in the cluster and no k8s/01-secrets.yaml on disk."
   echo "!! Copy k8s/01-secrets.example.yaml to k8s/01-secrets.yaml and fill in your real keys first."
   exit 1
 fi
 
 echo "==> Applying manifests"
 kubectl apply -f k8s/00-namespace.yaml
-kubectl apply -f k8s/01-secrets.yaml
+[ "$APPLY_SECRETS" = true ] && kubectl apply -f k8s/01-secrets.yaml
 kubectl apply -f k8s/02-configmap-tiers.yaml
 kubectl apply -f k8s/03-postgres.yaml
 kubectl apply -f k8s/04-controller-rbac.yaml
