@@ -165,7 +165,11 @@ def inject_capital():
 @app.route("/usage", methods=["POST"])
 def report_usage():
     body = request.get_json(force=True)
-    db.record_usage(body["agent_name"], body["input_tokens"], body["output_tokens"])
+    db.record_usage(
+        body["agent_name"], body["input_tokens"], body["output_tokens"],
+        cache_creation_tokens=body.get("cache_creation_tokens", 0),
+        cache_read_tokens=body.get("cache_read_tokens", 0),
+    )
     return jsonify({"ok": True})
 
 
@@ -184,6 +188,68 @@ def list_positions():
 # Runs on a timer, not on every request, so config changes and balance
 # changes are picked up together on a predictable cadence.
 # ---------------------------------------------------------------------------
+
+def enforce_exits():
+    """Deterministic exit rules, run by the Controller every reconcile pass rather
+    than waiting on an agent's next cycle or an LLM call succeeding. A stop-loss that
+    depends on an API being available isn't really a stop-loss - this is the backstop.
+    Claude can still decide to sell earlier for its own reasons; this just guarantees
+    the mechanical rules always fire."""
+    cfg = tier_config.load()
+    take_profit_pct = cfg["take_profit_pct"]
+
+    for pos in db.list_open_positions():
+        symbol = pos["symbol"]
+        qty = float(pos["qty"])
+        entry = float(pos["avg_entry_price"] or 0)
+        if entry <= 0 or qty <= 0:
+            continue
+
+        try:
+            price = alpaca_client.get_latest_price(symbol)
+        except Exception as e:
+            log.error(f"exit check: could not price {symbol}: {e}")
+            continue
+
+        change_pct = (price - entry) / entry * 100
+        stop_pct = float(pos["stop_loss_pct"] or cfg["default_stop_loss_pct"])
+
+        reason = None
+        if change_pct <= -stop_pct:
+            reason = f"stop-loss hit: {change_pct:.2f}% vs -{stop_pct:.2f}% limit"
+        elif change_pct >= take_profit_pct:
+            reason = f"take-profit hit: {change_pct:.2f}% vs +{take_profit_pct:.2f}% target"
+
+        if not reason:
+            continue
+
+        log.info(f"EXIT {symbol} for {pos['agent_name']}: {reason}")
+        client_order_id = f"exit-{pos['agent_name']}-{uuid.uuid4()}"
+        agent = db.get_agent(pos["agent_name"])
+        try:
+            result = alpaca_client.submit_market_order(
+                symbol=symbol, side="sell", qty=int(qty), client_order_id=client_order_id
+            )
+        except Exception as e:
+            log.error(f"exit order failed for {symbol}: {e}")
+            continue
+
+        filled_price = result.get("filled_price")
+        db.record_trade(
+            agent_id=agent["id"], client_order_id=client_order_id, symbol=symbol,
+            side="sell", qty=int(qty), stop_loss_pct=None,
+            reasoning=f"Automatic exit by Controller - {reason}",
+            status="filled" if filled_price else "accepted",
+        )
+        db.update_trade_status(
+            client_order_id, "filled" if filled_price else "accepted",
+            alpaca_order_id=result["alpaca_order_id"], filled_price=filled_price,
+            filled_at=datetime.now(timezone.utc) if filled_price else None,
+        )
+        if filled_price:
+            db.update_balance(pos["agent_name"], float(agent["current_balance"]) + int(qty) * filled_price)
+            db.apply_fill_to_position(agent["id"], symbol, "sell", int(qty), filled_price)
+
 
 def reconcile():
     cfg = tier_config.load()
@@ -306,6 +372,8 @@ if __name__ == "__main__":
     bootstrap()
     scheduler = BackgroundScheduler()
     scheduler.add_job(reconcile, "interval", seconds=cfg["reconcile_interval_seconds"])
+    scheduler.add_job(enforce_exits, "interval", seconds=cfg["exit_check_interval_seconds"],
+                       next_run_time=datetime.now())
     scheduler.add_job(run_discovery_scan, "interval", seconds=cfg["discovery_interval_seconds"],
                        next_run_time=datetime.now())  # also fire immediately on startup, not just after the first interval
     scheduler.start()

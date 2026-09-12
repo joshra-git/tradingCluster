@@ -323,13 +323,24 @@ def dashboard():
 
     try:
         row = query("""
-            SELECT COALESCE(SUM(input_tokens), 0) AS in_tok, COALESCE(SUM(output_tokens), 0) AS out_tok
+            SELECT COALESCE(SUM(input_tokens), 0) AS in_tok, COALESCE(SUM(output_tokens), 0) AS out_tok,
+                   COALESCE(SUM(cache_creation_tokens), 0) AS cache_create_tok,
+                   COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tok
             FROM api_usage WHERE created_at::date = CURRENT_DATE
         """)[0]
         input_tok, output_tok = row["in_tok"], row["out_tok"]
+        cache_create_tok, cache_read_tok = row["cache_create_tok"], row["cache_read_tok"]
     except Exception:
-        input_tok, output_tok = 0, 0
-    claude_spend_today = (input_tok / 1_000_000 * PRICE_INPUT_PER_M) + (output_tok / 1_000_000 * PRICE_OUTPUT_PER_M)
+        input_tok, output_tok, cache_create_tok, cache_read_tok = 0, 0, 0, 0
+    # Cache writes cost 1.25x normal input price; cache reads cost 0.1x (a 90% discount).
+    # Without this, cached tokens would silently get counted at full price, hiding the
+    # entire point of having added caching in the first place.
+    claude_spend_today = (
+        (input_tok / 1_000_000 * PRICE_INPUT_PER_M)
+        + (output_tok / 1_000_000 * PRICE_OUTPUT_PER_M)
+        + (cache_create_tok / 1_000_000 * PRICE_INPUT_PER_M * 1.25)
+        + (cache_read_tok / 1_000_000 * PRICE_INPUT_PER_M * 0.1)
+    )
 
     try:
         watching = query("SELECT * FROM shortlist_cache ORDER BY pct_change DESC NULLS LAST")

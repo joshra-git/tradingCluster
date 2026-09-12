@@ -184,14 +184,18 @@ def ensure_usage_table():
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
+        # self-migrating: safe to run against a table that already existed before caching was added
+        cur.execute("ALTER TABLE api_usage ADD COLUMN IF NOT EXISTS cache_creation_tokens INT NOT NULL DEFAULT 0")
+        cur.execute("ALTER TABLE api_usage ADD COLUMN IF NOT EXISTS cache_read_tokens INT NOT NULL DEFAULT 0")
 
 
-def record_usage(agent_name, input_tokens, output_tokens):
+def record_usage(agent_name, input_tokens, output_tokens, cache_creation_tokens=0, cache_read_tokens=0):
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO api_usage (agent_name, input_tokens, output_tokens) VALUES (%s, %s, %s)",
-            (agent_name, input_tokens, output_tokens),
+            """INSERT INTO api_usage (agent_name, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (agent_name, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens),
         )
 
 

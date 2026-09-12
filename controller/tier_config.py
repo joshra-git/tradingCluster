@@ -23,6 +23,9 @@ DEFAULTS = {
     "persistence_min_appearances": 2,     # how many scans a symbol must appear in...
     "persistence_lookback": 3,            # ...out of the last N scans, to count as real
     "discovery_interval_seconds": 900,    # how often the real market gets scanned (15 min)
+    "exit_check_interval_seconds": 60,    # how often stop-loss/take-profit are enforced
+    "take_profit_pct": 15.0,              # auto-sell once a position is up this much
+    "default_stop_loss_pct": 8.0,         # fallback if a position has no stop recorded
     "reconcile_interval_seconds": 60,
 }
 
