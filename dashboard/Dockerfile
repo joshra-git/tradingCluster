@@ -3,5 +3,5 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-EXPOSE 8090
+EXPOSE 8095
 CMD ["python", "dashboard.py"]

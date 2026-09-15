@@ -469,5 +469,6 @@ if __name__ == "__main__":
                        next_run_time=datetime.now())
     scheduler.add_job(run_discovery_scan, "interval", seconds=cfg["discovery_interval_seconds"],
                        next_run_time=datetime.now())  # also fire immediately on startup, not just after the first interval
+    scheduler.add_job(db.prune_equity_snapshots, "interval", hours=24)  # keep the per-minute snapshot table bounded
     scheduler.start()
     app.run(host="0.0.0.0", port=8080)

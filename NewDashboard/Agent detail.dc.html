@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="stylesheet" href="_ds/modernist-fbb548ef-fb46-426a-8011-0804687ab3c7/styles.css">
+<script src="_ds/modernist-fbb548ef-fb46-426a-8011-0804687ab3c7/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#e6e4e4;font-family:var(--font-body)}
+.dv-turn{padding:44px 48px 36px;border-bottom:2px solid var(--color-divider);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 22px}
+.dv-tid{font:800 10px var(--font-heading);letter-spacing:.08em;padding:4px 8px;background:var(--color-text);color:var(--color-bg);text-decoration:none}
+.dv-tname{font:600 13px/1.2 var(--font-body);color:var(--color-text)}
+.dv-opts{display:flex;flex-wrap:wrap;gap:36px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:10px;scroll-margin-top:16px}
+.dv-oid{font:800 10.5px var(--font-heading);letter-spacing:.06em;padding:4px 8px;background:color-mix(in srgb,var(--color-text) 12%,transparent);color:var(--color-text);text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:9px;font:400 11.5px/1.3 var(--font-body);color:color-mix(in srgb,var(--color-text) 60%,transparent)}
+.dv-card{max-width:100%;background:var(--color-bg);border:2px solid var(--color-divider);overflow:hidden}
+.dv-opt:target .dv-oid{background:var(--color-accent);color:var(--color-bg)}
+.dv-next{margin:26px 0 0;font:12px/1.6 var(--font-body);color:color-mix(in srgb,var(--color-text) 55%,transparent)}
+.num{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.kick{font:800 10px var(--font-heading);letter-spacing:.12em;text-transform:uppercase;color:color-mix(in srgb,var(--color-text) 55%,transparent)}
+.r2{height:2px;background:var(--color-divider)}
+.r1{height:1px;background:color-mix(in srgb,var(--color-text) 18%,transparent)}
+a{color:var(--color-accent);text-decoration:none}
+a:hover{color:var(--color-accent-600)}
+</style>
+</helmet>
+
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Agent drill-down — two directions</span></div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a">
+<div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Ledger grid — by the book: equal cells, 2px rules, everything scannable at a glance</div>
+<div class="dv-card" style="width:1240px">
+
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;padding:14px 28px">
+    <div style="display:flex;align-items:baseline;gap:18px">
+      <span style="font:800 15px var(--font-heading);letter-spacing:-.01em">Trading desk</span>
+      <span style="font-size:12.5px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">Agents &nbsp;/&nbsp; <span style="color:var(--color-text)">{{ agentName }}</span></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:20px">
+      <span class="num" style="font-size:12.5px;color:color-mix(in srgb,var(--color-text) 60%,transparent)">Brisbane 01:42:06</span>
+      <span style="display:inline-flex;align-items:center;gap:7px;background:var(--color-accent);color:var(--color-bg);padding:5px 10px;font:800 10.5px var(--font-heading);letter-spacing:.1em">
+        <span style="width:6px;height:6px;background:var(--color-bg);display:block"></span>MARKET OPEN
+      </span>
+      <span class="num" style="font-size:12.5px">11:42:06 EDT</span>
+    </div>
+  </div>
+  <div class="r2"></div>
+
+  <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:32px;padding:26px 28px 22px">
+    <div>
+      <div class="kick" style="margin-bottom:8px">Autonomous agent</div>
+      <h1 style="font-size:40px;margin:0 0 8px">{{ agentName }}</h1>
+      <div style="font-size:12.5px;color:color-mix(in srgb,var(--color-text) 60%,transparent)">
+        spawned from agent-01 &nbsp;·&nbsp; tier $250 → $1,000 &nbsp;·&nbsp; running 6d 14h &nbsp;·&nbsp; 41 decisions
+      </div>
+    </div>
+    <div style="display:flex;gap:10px">
+      <span class="tag tag-outline">read-only view</span>
+      <span class="tag tag-accent">active</span>
+    </div>
+  </div>
+  <div class="r2"></div>
+
+  <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr))">
+    <div style="padding:18px 22px;border-right:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+      <div class="kick" style="margin-bottom:10px">Total value</div>
+      <div class="num" style="font:800 28px var(--font-heading)">$1,480.30</div>
+      <div class="num" style="font-size:12px;margin-top:4px;color:color-mix(in srgb,var(--color-text) 60%,transparent)">+18.4% since spawn</div>
+    </div>
+    <div style="padding:18px 22px;border-right:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+      <div class="kick" style="margin-bottom:10px">Cash</div>
+      <div class="num" style="font:800 28px var(--font-heading)">$412.88</div>
+      <div class="num" style="font-size:12px;margin-top:4px;color:color-mix(in srgb,var(--color-text) 60%,transparent)">28% of book</div>
+    </div>
+    <div style="padding:18px 22px;border-right:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+      <div class="kick" style="margin-bottom:10px">Invested</div>
+      <div class="num" style="font:800 28px var(--font-heading)">$1,067.42</div>
+      <div class="num" style="font-size:12px;margin-top:4px;color:color-mix(in srgb,var(--color-text) 60%,transparent)">2 positions</div>
+    </div>
+    <div style="padding:18px 22px;border-right:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+      <div class="kick" style="margin-bottom:10px">Open P&amp;L</div>
+      <div class="num" style="font:800 28px var(--font-heading)">+$96.14</div>
+      <div class="num" style="font-size:12px;margin-top:4px;color:color-mix(in srgb,var(--color-text) 60%,transparent)">+9.9% on cost</div>
+    </div>
+    <div style="padding:18px 22px">
+      <div class="kick" style="margin-bottom:10px">Model calls today</div>
+      <div class="num" style="font:800 28px var(--font-heading)">212<span style="font-size:16px;color:color-mix(in srgb,var(--color-text) 45%,transparent)"> / 1400</span></div>
+      <div style="margin-top:8px;height:6px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"><div style="width:15%;height:6px;background:var(--color-accent)"></div></div>
+    </div>
+  </div>
+  <div class="r2"></div>
+
+  <div style="display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr)">
+    <div style="padding:22px 28px;border-right:2px solid var(--color-divider)">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">
+        <div class="kick">Account value · last 30 sessions</div>
+        <div class="num" style="font-size:11.5px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">$1,250 → $1,480.30</div>
+      </div>
+      <svg viewBox="0 0 740 190" preserveAspectRatio="none" style="width:100%;height:190px;display:block;margin-top:10px">
+        <line x1="0" y1="10" x2="740" y2="10" stroke="currentColor" stroke-opacity=".14"></line>
+        <line x1="0" y1="66" x2="740" y2="66" stroke="currentColor" stroke-opacity=".14"></line>
+        <line x1="0" y1="122" x2="740" y2="122" stroke="currentColor" stroke-opacity=".14"></line>
+        <line x1="0" y1="178" x2="740" y2="178" stroke="currentColor" stroke-opacity=".3"></line>
+        <polyline points="0,150 25,144 50,152 75,138 100,130 124,136 149,120 174,112 199,118 224,104 249,96 273,108 298,92 323,84 348,88 373,72 398,80 422,64 447,70 472,56 497,48 522,60 547,44 571,52 596,36 621,42 646,28 671,34 696,22 740,26" fill="none" stroke="#201e1d" stroke-width="2"></polyline>
+        <circle cx="740" cy="26" r="4" fill="#ec3013"></circle>
+      </svg>
+      <div style="display:flex;justify-content:space-between;margin-top:8px" class="num">
+        <span style="font-size:11px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">Aug 04</span>
+        <span style="font-size:11px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">Aug 22</span>
+        <span style="font-size:11px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">Sep 15</span>
+      </div>
+    </div>
+    <div style="padding:22px 28px">
+      <div class="kick" style="margin-bottom:14px">Thinking right now</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <span style="background:var(--color-accent);color:var(--color-bg);padding:5px 11px;font:800 12px var(--font-heading);letter-spacing:.08em">BUY</span>
+        <span class="num" style="font:800 26px var(--font-heading)">SPY</span>
+      </div>
+      <p style="font-size:13.5px;line-height:1.55;margin:0 0 14px;text-wrap:pretty">Trend window is holding above the 20-session mean and the pullback stalled at prior support. Sizing at 40% of available cash, leaving room for a second entry if QQQ confirms.</p>
+      <div class="r1"></div>
+      <div style="display:flex;justify-content:space-between;padding:10px 0;font-size:12.5px">
+        <span style="color:color-mix(in srgb,var(--color-text) 55%,transparent)">Decided</span><span class="num">11:41:58 EDT</span>
+      </div>
+      <div class="r1"></div>
+      <div style="display:flex;justify-content:space-between;padding:10px 0;font-size:12.5px">
+        <span style="color:color-mix(in srgb,var(--color-text) 55%,transparent)">Next cycle</span><span class="num">in 4m 12s</span>
+      </div>
+      <div class="r1"></div>
+      <div style="display:flex;justify-content:space-between;padding:10px 0;font-size:12.5px">
+        <span style="color:color-mix(in srgb,var(--color-text) 55%,transparent)">Order state</span><span class="num">submitted → pending fill</span>
+      </div>
+    </div>
+  </div>
+  <div class="r2"></div>
+
+  <sc-if value="{{ showEquityTable }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:22px 28px">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px">
+      <div class="kick">Positions</div>
+      <div style="font-size:11px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">Gains in ink, losses in red — the system is mono</div>
+    </div>
+    <table class="table" style="width:100%">
+      <thead><tr>
+        <th style="text-align:left">Symbol</th><th style="text-align:left">Instrument</th>
+        <th style="text-align:right">Qty</th><th style="text-align:right">Entry</th>
+        <th style="text-align:right">Last</th><th style="text-align:right">Change</th><th style="text-align:right">Value</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td style="font-weight:700">SPY</td>
+          <td style="color:color-mix(in srgb,var(--color-text) 60%,transparent)">SPDR S&amp;P 500 ETF Trust</td>
+          <td class="num" style="text-align:right">0.8412</td>
+          <td class="num" style="text-align:right">$571.2300</td>
+          <td class="num" style="text-align:right">$618.4100</td>
+          <td class="num" style="text-align:right;font-weight:700">+8.3%</td>
+          <td class="num" style="text-align:right">$520.21</td>
+        </tr>
+        <tr>
+          <td style="font-weight:700">QQQ</td>
+          <td style="color:color-mix(in srgb,var(--color-text) 60%,transparent)">Invesco QQQ Trust</td>
+          <td class="num" style="text-align:right">1.2040</td>
+          <td class="num" style="text-align:right">$486.9100</td>
+          <td class="num" style="text-align:right">$454.6800</td>
+          <td class="num" style="text-align:right;font-weight:700;color:var(--color-accent-700)">−6.6%</td>
+          <td class="num" style="text-align:right">$547.21</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="r2"></div>
+  </sc-if>
+
+  <sc-if value="{{ showTradeFeed }}" hint-placeholder-val="{{ true }}">
+  <div style="padding:22px 28px 26px">
+    <div class="kick" style="margin-bottom:14px">Decision log</div>
+    <div>
+      <div style="display:grid;grid-template-columns:76px 78px 62px minmax(0,1fr) 128px;gap:16px;align-items:start;padding:12px 0;border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+        <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">11:41:58</span>
+        <span style="background:var(--color-accent);color:var(--color-bg);padding:3px 8px;font:800 10.5px var(--font-heading);letter-spacing:.08em;justify-self:start">BUY</span>
+        <span class="num" style="font-weight:700;font-size:13px">SPY</span>
+        <span style="font-size:13px;color:color-mix(in srgb,var(--color-text) 72%,transparent);text-wrap:pretty">Trend window holding above the 20-session mean; pullback stalled at support.</span>
+        <span class="num" style="font-size:12px;text-align:right">submitted</span>
+      </div>
+      <div style="display:grid;grid-template-columns:76px 78px 62px minmax(0,1fr) 128px;gap:16px;align-items:start;padding:12px 0;border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+        <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">10:58:12</span>
+        <span style="border:1px solid var(--color-divider);padding:3px 8px;font:800 10.5px var(--font-heading);letter-spacing:.08em;justify-self:start">HOLD</span>
+        <span class="num" style="font-weight:700;font-size:13px">QQQ</span>
+        <span style="font-size:13px;color:color-mix(in srgb,var(--color-text) 72%,transparent);text-wrap:pretty">Drawdown inside tolerance. No thesis change, so no action — waiting for the next close.</span>
+        <span class="num" style="font-size:12px;text-align:right">no order</span>
+      </div>
+      <div style="display:grid;grid-template-columns:76px 78px 62px minmax(0,1fr) 128px;gap:16px;align-items:start;padding:12px 0;border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+        <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">09:34:40</span>
+        <span style="background:var(--color-text);color:var(--color-bg);padding:3px 8px;font:800 10.5px var(--font-heading);letter-spacing:.08em;justify-self:start">SELL</span>
+        <span class="num" style="font-weight:700;font-size:13px">SPY</span>
+        <span style="font-size:13px;color:color-mix(in srgb,var(--color-text) 72%,transparent);text-wrap:pretty">Trimmed a third into the open to rebuild cash ahead of the CPI print.</span>
+        <span class="num" style="font-size:12px;text-align:right">filled $611.20</span>
+      </div>
+      <div style="display:grid;grid-template-columns:76px 78px 62px minmax(0,1fr) 128px;gap:16px;align-items:start;padding:12px 0;border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent);border-bottom:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+        <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">Sep 12</span>
+        <span style="background:var(--color-accent);color:var(--color-bg);padding:3px 8px;font:800 10.5px var(--font-heading);letter-spacing:.08em;justify-self:start">BUY</span>
+        <span class="num" style="font-weight:700;font-size:13px">QQQ</span>
+        <span style="font-size:13px;color:color-mix(in srgb,var(--color-text) 72%,transparent);text-wrap:pretty">Opened on a breakout that failed the next session.</span>
+        <span class="num" style="font-size:12px;text-align:right;color:var(--color-accent-700)">rejected → retried</span>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+</div>
+</div>
+
+<div class="dv-opt" id="1b">
+<div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Broadsheet — spec rail, one display number, the live decision as a red poster band</div>
+<div class="dv-card" style="width:1240px">
+<div style="display:grid;grid-template-columns:288px minmax(0,1fr)">
+
+  <div style="border-right:2px solid var(--color-divider);padding:26px 24px 30px;background:var(--color-neutral-100)">
+    <div style="font:800 14px var(--font-heading);margin-bottom:26px">Trading desk</div>
+    <div class="kick" style="margin-bottom:8px">Agent</div>
+    <div style="font:800 30px/1.05 var(--font-heading);letter-spacing:-.02em;margin-bottom:10px">{{ agentName }}</div>
+    <div style="display:flex;gap:8px;margin-bottom:22px"><span class="tag tag-accent">active</span><span class="tag tag-outline">gen 2</span></div>
+
+    <div class="r2" style="margin-bottom:18px"></div>
+    <div class="kick" style="margin-bottom:12px">Capital tier</div>
+    <div style="display:flex;align-items:flex-end;gap:5px;height:56px;margin-bottom:8px">
+      <div style="flex:1;height:22%;background:color-mix(in srgb,var(--color-text) 20%,transparent)"></div>
+      <div style="flex:1;height:38%;background:color-mix(in srgb,var(--color-text) 20%,transparent)"></div>
+      <div style="flex:1;height:60%;background:var(--color-accent)"></div>
+      <div style="flex:1;height:78%;background:color-mix(in srgb,var(--color-text) 20%,transparent)"></div>
+      <div style="flex:1;height:100%;background:color-mix(in srgb,var(--color-text) 20%,transparent)"></div>
+    </div>
+    <div class="num" style="font-size:11.5px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">$250 → $1,000 &nbsp;·&nbsp; tier 3 of 5</div>
+
+    <div class="r2" style="margin:18px 0"></div>
+    <div style="display:flex;justify-content:space-between;padding:9px 0;font-size:12.5px;border-bottom:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+      <span style="color:color-mix(in srgb,var(--color-text) 55%,transparent)">Cash</span><span class="num" style="font-weight:700">$412.88</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;padding:9px 0;font-size:12.5px;border-bottom:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+      <span style="color:color-mix(in srgb,var(--color-text) 55%,transparent)">Invested</span><span class="num" style="font-weight:700">$1,067.42</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;padding:9px 0;font-size:12.5px;border-bottom:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+      <span style="color:color-mix(in srgb,var(--color-text) 55%,transparent)">Open P&amp;L</span><span class="num" style="font-weight:700">+$96.14</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;padding:9px 0;font-size:12.5px">
+      <span style="color:color-mix(in srgb,var(--color-text) 55%,transparent)">Parent</span><span class="num">agent-01</span>
+    </div>
+
+    <div class="r2" style="margin:18px 0"></div>
+    <div class="kick" style="margin-bottom:10px">Burn · model calls</div>
+    <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:8px">
+      <span class="num" style="font:800 22px var(--font-heading)">212</span>
+      <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">of 1400 today</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(28,1fr);gap:2px">
+      <div style="height:16px;background:var(--color-accent)"></div><div style="height:16px;background:var(--color-accent)"></div><div style="height:16px;background:var(--color-accent)"></div><div style="height:16px;background:var(--color-accent)"></div>
+      <div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div>
+      <div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div>
+      <div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div>
+      <div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div>
+      <div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div>
+      <div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div><div style="height:16px;background:color-mix(in srgb,var(--color-text) 14%,transparent)"></div>
+    </div>
+
+    <div class="r2" style="margin:18px 0"></div>
+    <div class="kick" style="margin-bottom:10px">Sessions</div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0">
+      <span style="font-size:12px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">New York</span>
+      <span class="num" style="font-weight:700;font-size:15px">11:42:06</span>
+    </div>
+    <div style="font:800 10.5px var(--font-heading);letter-spacing:.1em;color:var(--color-accent-700);margin-bottom:12px">OPEN · 4h 18m LEFT</div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0">
+      <span style="font-size:12px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">Brisbane</span>
+      <span class="num" style="font-weight:700;font-size:15px">01:42:06</span>
+    </div>
+    <div style="font-size:11.5px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">Tue 16 Sep · you are asleep</div>
+  </div>
+
+  <div>
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:30px 32px 24px">
+      <div>
+        <div class="kick" style="margin-bottom:12px">Account value</div>
+        <div class="num" style="font:900 76px/.9 var(--font-heading);letter-spacing:-.035em">$1,480.30</div>
+        <div class="num" style="font-size:15px;margin-top:12px;color:color-mix(in srgb,var(--color-text) 65%,transparent)">+$230.30 &nbsp;/&nbsp; +18.4% since spawn &nbsp;·&nbsp; 6d 14h</div>
+      </div>
+      <div style="text-align:left;min-width:150px">
+        <div class="kick" style="margin-bottom:10px">Best / worst day</div>
+        <div class="num" style="font:800 20px var(--font-heading)">+$48.10</div>
+        <div class="num" style="font:800 20px var(--font-heading);color:var(--color-accent-700);margin-top:2px">−$31.62</div>
+      </div>
+    </div>
+
+    <div style="background:var(--color-accent);color:var(--color-bg);padding:24px 32px 26px">
+      <div style="font:800 10px var(--font-heading);letter-spacing:.14em;margin-bottom:12px;opacity:.85">THINKING RIGHT NOW · 11:41:58 EDT</div>
+      <div style="display:flex;align-items:baseline;gap:16px;margin-bottom:12px">
+        <span class="num" style="font:900 44px/1 var(--font-heading);letter-spacing:-.03em">BUY SPY</span>
+        <span class="num" style="font:800 15px var(--font-heading);opacity:.85">0.29 sh &nbsp;·&nbsp; ~$165 &nbsp;·&nbsp; 40% of cash</span>
+      </div>
+      <p style="margin:0;max-width:74ch;font-size:15px;line-height:1.5;text-wrap:pretty">Trend window is holding above the 20-session mean and the pullback stalled at prior support. Sizing at 40% of available cash, leaving room for a second entry if QQQ confirms.</p>
+    </div>
+
+    <div style="padding:24px 32px 18px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+        <div class="kick">Value over time · 30 sessions</div>
+        <div class="num" style="font-size:11.5px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">low $1,218 &nbsp;·&nbsp; high $1,491</div>
+      </div>
+      <svg viewBox="0 0 900 200" preserveAspectRatio="none" style="width:100%;height:200px;display:block">
+        <polygon points="0,150 25,144 50,152 75,138 100,130 124,136 149,120 174,112 199,118 224,104 249,96 273,108 298,92 323,84 348,88 373,72 398,80 422,64 447,70 472,56 497,48 522,60 547,44 571,52 596,36 621,42 646,28 671,34 696,22 900,26 900,190 0,190" fill="#ffe0d9"></polygon>
+        <polyline points="0,150 25,144 50,152 75,138 100,130 124,136 149,120 174,112 199,118 224,104 249,96 273,108 298,92 323,84 348,88 373,72 398,80 422,64 447,70 472,56 497,48 522,60 547,44 571,52 596,36 621,42 646,28 671,34 696,22 900,26" fill="none" stroke="#ec3013" stroke-width="3"></polyline>
+        <line x1="0" y1="190" x2="900" y2="190" stroke="#201e1d" stroke-width="2"></line>
+      </svg>
+    </div>
+
+    <div class="r2"></div>
+    <div style="padding:22px 32px">
+      <div class="kick" style="margin-bottom:14px">Holding</div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0;border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+        <div style="padding:16px 22px 16px 0;border-right:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px">
+            <span style="font:800 24px var(--font-heading)">SPY</span>
+            <span class="num" style="font:800 24px var(--font-heading)">+8.3%</span>
+          </div>
+          <div class="num" style="font-size:12.5px;color:color-mix(in srgb,var(--color-text) 58%,transparent)">0.8412 @ $571.2300 → $618.4100 &nbsp;·&nbsp; $520.21</div>
+        </div>
+        <div style="padding:16px 0 16px 22px">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px">
+            <span style="font:800 24px var(--font-heading)">QQQ</span>
+            <span class="num" style="font:800 24px var(--font-heading);color:var(--color-accent-700)">−6.6%</span>
+          </div>
+          <div class="num" style="font-size:12.5px;color:color-mix(in srgb,var(--color-text) 58%,transparent)">1.2040 @ $486.9100 → $454.6800 &nbsp;·&nbsp; $547.21</div>
+        </div>
+      </div>
+    </div>
+
+    <sc-if value="{{ showTradeFeed }}" hint-placeholder-val="{{ true }}">
+    <div class="r2"></div>
+    <div style="padding:22px 32px 28px">
+      <div class="kick" style="margin-bottom:12px">Decision log · 41 total</div>
+      <div style="display:grid;grid-template-columns:72px 8px 58px minmax(0,1fr) 116px;gap:14px;align-items:baseline;padding:11px 0;border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+        <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">11:41:58</span>
+        <span style="width:8px;height:8px;background:var(--color-accent);display:block"></span>
+        <span class="num" style="font-weight:700;font-size:13px">SPY</span>
+        <span style="font-size:13px;color:color-mix(in srgb,var(--color-text) 72%,transparent)">Buy — trend holding above the 20-session mean.</span>
+        <span class="num" style="font-size:12px;text-align:right">submitted</span>
+      </div>
+      <div style="display:grid;grid-template-columns:72px 8px 58px minmax(0,1fr) 116px;gap:14px;align-items:baseline;padding:11px 0;border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+        <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">10:58:12</span>
+        <span style="width:8px;height:8px;border:1px solid var(--color-divider);display:block"></span>
+        <span class="num" style="font-weight:700;font-size:13px">QQQ</span>
+        <span style="font-size:13px;color:color-mix(in srgb,var(--color-text) 72%,transparent)">Hold — drawdown inside tolerance, no thesis change.</span>
+        <span class="num" style="font-size:12px;text-align:right">no order</span>
+      </div>
+      <div style="display:grid;grid-template-columns:72px 8px 58px minmax(0,1fr) 116px;gap:14px;align-items:baseline;padding:11px 0;border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+        <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">09:34:40</span>
+        <span style="width:8px;height:8px;background:var(--color-text);display:block"></span>
+        <span class="num" style="font-weight:700;font-size:13px">SPY</span>
+        <span style="font-size:13px;color:color-mix(in srgb,var(--color-text) 72%,transparent)">Sell — trimmed a third into the open to rebuild cash.</span>
+        <span class="num" style="font-size:12px;text-align:right">filled $611.20</span>
+      </div>
+      <div style="display:grid;grid-template-columns:72px 8px 58px minmax(0,1fr) 116px;gap:14px;align-items:baseline;padding:11px 0;border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent);border-bottom:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+        <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">Sep 12</span>
+        <span style="width:8px;height:8px;background:var(--color-accent);display:block"></span>
+        <span class="num" style="font-weight:700;font-size:13px">QQQ</span>
+        <span style="font-size:13px;color:color-mix(in srgb,var(--color-text) 72%,transparent)">Buy — breakout that failed the next session.</span>
+        <span class="num" style="font-size:12px;text-align:right;color:var(--color-accent-700)">rejected</span>
+      </div>
+    </div>
+    </sc-if>
+  </div>
+
+</div>
+</div>
+</div>
+
+</div>
+<p class="dv-next">Try next: "take the spec rail from <a class="dv-oid" href="#1b">1b</a> into <a class="dv-oid" href="#1a">1a</a>" · "add the fleet overview screen in the <a class="dv-oid" href="#1b">1b</a> style" · "show me a culled-agent state"</p>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;agentName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;agent-04&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;showTradeFeed&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;showPositionsTable&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      agentName: this.props.agentName ?? "agent-04",
+      showTradeFeed: this.props.showTradeFeed ?? true,
+      showEquityTable: this.props.showPositionsTable ?? true,
+    };
+  }
+}
+</script>
+</body>
+</html>
