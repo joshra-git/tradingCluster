@@ -98,6 +98,7 @@ def screen():
     cfg = tier_config.load()
     agent_name = request.args.get("agent_name")
     asset_class = "stocks"
+    agent = None
     if agent_name:
         agent = db.get_agent(agent_name)
         if agent:
@@ -122,6 +123,15 @@ def screen():
     except Exception as e:
         log.error(f"screen failed for {asset_class}: {e}")
         return jsonify({"error": str(e)}), 502
+
+    # Shared awareness: tell this agent which candidates a sibling agent already
+    # holds (or has a buy working on), so it can steer toward something else on
+    # its own - the fleet spreading out by choice, not just by the risk layer's
+    # hard block after the fact.
+    if agent:
+        claims = db.claims_by_other_agents(agent["id"])
+        for sym, data in shortlist.items():
+            data["claimed_by"] = claims.get(sym)
     return jsonify(shortlist)
 
 

@@ -75,6 +75,16 @@ support level, such as the most recent meaningful higher low, not an arbitrary r
 number. A deterministic risk layer downstream will independently check your position size
 and stop-loss before anything reaches the broker.
 
+SHARED AWARENESS ACROSS THE FLEET
+You are one of several agents working from a similar candidate list, and a "claimed_by"
+field on a candidate names another agent that already owns that one (or has a buy working
+on it). Steer toward a different candidate when you see that field filled in - the fleet
+does better spread across a few different bets than doubled up on one, and it also means
+your reasoning should say plainly that you skipped it for that reason. Only go ahead on a
+claimed name if every other candidate is clearly worse, and know that if you do, the
+downstream risk check will block the order anyway, since only one agent may hold a given
+name at a time.
+
 HOLDING IS A REAL DECISION, NOT A DEFAULT FAILURE
 You do not need to act every cycle. Holding is often correct when no candidate presents a
 genuinely clean setup. Do not force a trade just to appear productive.
@@ -217,11 +227,13 @@ def explain_decision(decision, status, snapshot):
             pct_key = next((k for k in data if k.endswith("_change_pct")), None)
             pct = data.get(pct_key) if pct_key else None
             mark = "  <-- picked" if sym == symbol else ""
+            claimed_by = data.get("claimed_by")
+            claim_note = f"  (already held by {claimed_by})" if claimed_by else ""
             if pct is None:
-                lines.append(f"    {sym:<6} ${data.get('price', 0):>9,.2f}{mark}")
+                lines.append(f"    {sym:<6} ${data.get('price', 0):>9,.2f}{claim_note}{mark}")
             else:
                 direction = "up" if pct >= 0 else "down"
-                lines.append(f"    {sym:<6} ${data.get('price', 0):>9,.2f}   {direction} {abs(pct):.1f}% over the last week{mark}")
+                lines.append(f"    {sym:<6} ${data.get('price', 0):>9,.2f}   {direction} {abs(pct):.1f}% over the last week{claim_note}{mark}")
 
     lines.append("=" * 68)
     return "\n".join(lines)
