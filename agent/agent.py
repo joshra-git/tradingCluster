@@ -1,9 +1,13 @@
 """
 An agent pod is deliberately dumb: it has no memory of its own. Every cycle it
-asks the Controller what its situation is, looks at the market, asks Claude
+asks the Controller what its situation is, looks at the market, asks the model
 for a decision, and reports back. If this process dies mid-cycle, Kubernetes
 restarts it and the next cycle just starts fresh - nothing was lost because
 nothing important was ever held here.
+
+Trades either stocks or crypto - the Controller tells it which on every
+heartbeat, so the same image serves both and the split is a config change
+rather than a different build.
 """
 import os
 import time
@@ -17,8 +21,8 @@ log = logging.getLogger("agent")
 
 AGENT_NAME = os.environ["AGENT_NAME"]
 CONTROLLER_URL = os.environ["CONTROLLER_URL"]
-CYCLE_SECONDS = int(os.environ.get("CYCLE_SECONDS", "300"))            # market-hours cadence: 5 min
-OFF_PEAK_CYCLE_SECONDS = int(os.environ.get("OFF_PEAK_CYCLE_SECONDS", "3600"))  # off-peak cadence: 1 hour
+
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-6")
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -38,86 +42,67 @@ DECISION_TOOL = {
     },
 }
 
-# This block is identical on every single call, across every agent - which is exactly
-# what makes it eligible for Anthropic's prompt caching (a 90% discount on repeated
-# context, versus paying full price every time). It needs to be long enough to clear
-# the ~1,024 token minimum, so it's written as a genuinely useful playbook rather than
-# padding - the same rules Claude would otherwise have to reconstruct from scratch
-# in shorter form on every call.
 PLAYBOOK = """You are one of several autonomous trading agents in a swing-trading system, each
-managing an independent slice of capital under identical house rules. Read this playbook
-once; it applies to every cycle you run, for as long as this system is active.
+managing an independent slice of capital under identical house rules. Depending on
+the agent you may be trading company shares or cryptocurrency - the message will
+say which. The judgement is the same either way; only the wording changes (shares
+vs coins/units).
 
 YOUR ROLE
 Each cycle, you are shown a short, pre-screened list of momentum candidates and asked to
 decide: buy, sell, or hold. You are not responsible for discovering candidates yourself -
 a separate screening layer has already scanned a broad universe of the real market and
 narrowed it down to only the names showing genuine, sustained momentum. Treat every
-candidate you are shown as having already cleared that bar. Your job is judgment on top
-of what's already been filtered for you, not further discovery.
+candidate you are shown as having already cleared that bar.
 
 WHAT A GOOD SETUP LOOKS LIKE
 Favor "stair-step" price action: a sequence of recent closes that climbs in stages, where
 each new high holds above the prior close, suggesting buying pressure accumulating over
-several sessions rather than a single chaotic event. A real example from this system: a
-candidate whose closes moved 6.39 -> 6.40 -> 6.20 -> 7.45 -> 9.75 was judged favorably
-specifically because each leg higher held its ground - that is the pattern to look for.
+several sessions rather than a single chaotic event.
 
-RED FLAGS THAT SHOULD WEIGH AGAINST A BUY, EVEN ON A STRONG-LOOKING CANDIDATE
-- A parabolic spike that is already fading back down from its peak (blow-off top risk) -
-  for example a move from roughly $1 to $12 that has already retraced to $5 in the same
-  window is a warning sign, not a bargain.
-- A single violent one-day gap with no preceding build-up (gap-and-trap risk) - a jump
-  from $3.67 to $6.76 in one session, with nothing before it, is fragile, not confirmed.
-- Sharp, erratic swings within the lookback window rather than an orderly climb - a dip
-  to a multi-day low mid-week followed by a sudden recovery suggests instability, not
-  strength, even if the net change over the period looks impressive.
-- An extremely low absolute share price. Liquidity and fill quality tend to be weaker at
-  the very low end of the price range even after a price floor has technically been met.
+RED FLAGS THAT SHOULD WEIGH AGAINST A BUY
+- A parabolic spike already fading back from its peak (blow-off top risk).
+- A single violent one-day gap with no preceding build-up (gap-and-trap risk).
+- Sharp, erratic swings rather than an orderly climb - instability, not strength.
+- An extremely low absolute price - liquidity and fill quality tend to be weaker.
+- With crypto especially, remember it moves much harder than shares do, so a big
+  percentage swing is more ordinary there and means less on its own.
 
 POSITION SIZING AND RISK
-Size positions conservatively relative to the capital you are told you have available for
-this cycle - do not treat a strong conviction as license to oversize. A stop-loss is
-mandatory on every buy, with no exceptions. Set it just below a genuine recent support
-level, such as the most recent meaningful higher low in the closing price sequence, not
-an arbitrary round number picked for convenience. Remember that a deterministic risk
-layer downstream will independently check your position size and stop-loss before
-anything is actually sent to the broker - your job is to propose something sound, not to
-assume your exact numbers will be used unmodified.
+Size positions conservatively relative to the capital you are told you have available.
+A stop-loss is mandatory on every buy, no exceptions. Set it just below a genuine recent
+support level, such as the most recent meaningful higher low, not an arbitrary round
+number. A deterministic risk layer downstream will independently check your position size
+and stop-loss before anything reaches the broker.
 
 HOLDING IS A REAL DECISION, NOT A DEFAULT FAILURE
-You do not need to act every cycle. Holding is often the correct call when no candidate
-presents a genuinely clean setup. The goal is a good decision when one is warranted, not
-constant activity - do not force a trade just to appear productive this cycle.
-
-BEING AWARE OF OTHER AGENTS
-Other agents in this system may be looking at this exact same candidate list at this
-exact same moment. If your reasoning leads you to the same pick another agent would also
-reach, that is expected given shared input data, not a flaw in your judgment - but it
-does mean the system's real diversification is lower than the number of agents running
-might suggest, since correlated conviction is the natural result of correlated data.
+You do not need to act every cycle. Holding is often correct when no candidate presents a
+genuinely clean setup. Do not force a trade just to appear productive.
 
 SWING TRADING, NOT DAY TRADING
-This system holds positions for days, not minutes or hours. Do not treat a single
-cycle's data as a reason to enter and exit within the same session. A candidate that
-looks attractive this cycle should still look attractive on a re-check tomorrow if the
-underlying thesis is sound - if it wouldn't, that's a sign the setup was too fragile to
-act on in the first place. Frequent same-day round-trips also interact with pattern-day-
-trading rules at the account level, which is a separate reason this system is built
-around multi-day holds rather than intraday scalping.
+This system holds positions for days, not minutes. A candidate that looks attractive this
+cycle should still look attractive tomorrow if the thesis is sound.
 
-WHAT GOOD REASONING LOOKS LIKE
-A strong justification names specific numbers from what you were actually shown - the
-closing price sequence, the percentage change, the current price relative to recent
-levels - rather than general statements like "this looks strong" or "momentum is good."
-Compare and rule out at least one other candidate by name when it helps clarify why the
-one you picked was better, the way a real analyst would justify a choice among several
-live options rather than reviewing only the one they preferred in isolation.
+WRITE FOR A COMPLETE BEGINNER
+The person reading your reasoning is new to trading and does not know industry jargon.
+Write the way you would explain it to a friend who has never bought a share before.
+
+- Do NOT use terms like: parabolic, blow-off top, consolidation, resistance, support,
+  breakout, pivot, RSI, overbought, relative strength, base, retrace, gap-and-trap.
+- If a concept genuinely needs one of those ideas, describe it in ordinary words instead.
+  Say "the price has been climbing steadily for several days" rather than "sustained
+  momentum above the breakout pivot". Say "if it drops this far, something has gone
+  wrong and we get out" rather than "invalidation of the thesis below support".
+- Always explain what the numbers MEAN, not just what they are. "Up 12% over five days"
+  is data; "it has gained 12 cents on the dollar over the last week, which is a fast
+  climb" is an explanation.
+- When you reject a candidate, say plainly why in one short clause, e.g. "skipped GTBP
+  because it jumped all at once in a single day, which often falls back just as fast".
+- Aim for three or four short sentences a beginner could read out loud and follow.
 
 OUTPUT FORMAT
-Always report your decision using the trade_decision tool. Keep reasoning concise and
-concrete - two or three sentences that justify the call with specifics from the data you
-were shown, not an exhaustive essay. Every buy decision must include a stop_loss_pct."""
+Always report your decision using the trade_decision tool. Every buy decision must
+include a stop_loss_pct."""
 
 
 def get_my_status():
@@ -126,15 +111,34 @@ def get_my_status():
     return resp.json()
 
 
-def ask_claude(status, market_snapshot):
-    prompt = f"""You are managing a swing-trading position with ${status['current_balance']:.2f} available.
+def ask_model(status, market_snapshot):
+    market = "cryptocurrency" if status.get("asset_class") == "crypto" else "stock"
+    holdings = status.get("holdings") or []
+    if holdings:
+        lines = []
+        for h in holdings:
+            direction = "up" if h["change_pct"] >= 0 else "down"
+            lines.append(
+                f"  - {h['symbol']}: you own {h['qty']} bought at ${h['bought_at']}, "
+                f"now ${h['now']} ({direction} {abs(h['change_pct']):.1f}%), worth ${h['value']}"
+            )
+        holdings_text = (
+            "\n\nWHAT YOU ALREADY OWN:\n" + "\n".join(lines) +
+            "\n\nYou can add to one of these, sell one, or buy something new with the cash you "
+            "have left. Adding to a position you already hold concentrates your risk in that one "
+            "name, so only do it if it still looks clearly better than the alternatives."
+        )
+    else:
+        holdings_text = "\n\nYou currently own nothing - all your money is sitting as cash."
+
+    prompt = f"""You are managing a {market} swing-trading position with ${status['current_balance']:.2f} in spare cash.{holdings_text}
 These are the top {len(market_snapshot)} candidates right now, screened by momentum from a much larger
-universe of symbols - each one already stood out enough to reach you, so treat them as pre-filtered,
-not as a random watchlist.
+universe of symbols - each one already stood out enough to reach you, so treat them as pre-filtered.
 Current market snapshot: {json.dumps(market_snapshot)}"""
 
+    asset_word = "cryptocurrency" if status.get("asset_class") == "crypto" else "stock"
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=LLM_MODEL,
         max_tokens=1024,
         system=[{"type": "text", "text": PLAYBOOK, "cache_control": {"type": "ephemeral"}}],
         tools=[DECISION_TOOL],
@@ -142,37 +146,89 @@ Current market snapshot: {json.dumps(market_snapshot)}"""
         messages=[{"role": "user", "content": prompt}],
     )
     try:
+        u = response.usage
         requests.post(f"{CONTROLLER_URL}/usage", json={
             "agent_name": AGENT_NAME,
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-            "cache_creation_tokens": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
-            "cache_read_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_creation_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
+            "cache_read_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
         }, timeout=10)
     except Exception as e:
         log.warning(f"failed to report token usage: {e}")
+
     for block in response.content:
         if block.type == "tool_use":
             return block.input
-    return {"action": "hold", "reasoning": "no tool call returned"}
+    return {"action": "hold", "reasoning": "no usable tool call returned"}
 
 
 def fetch_market_snapshot():
-    # Screened server-side (see /screen on the Controller) - only the top-N
-    # momentum candidates from the full universe ever reach this agent, which
-    # is what keeps token cost flat regardless of how large the universe gets.
-    resp = requests.get(f"{CONTROLLER_URL}/screen", timeout=20)
+    resp = requests.get(f"{CONTROLLER_URL}/screen", params={"agent_name": AGENT_NAME}, timeout=20)
     resp.raise_for_status()
     return resp.json()
 
 
-# Tracks what this pod saw and decided last cycle, purely in memory - if the pod
-# restarts, this just resets to "always ask," which is a safe default, not a bug.
-# Only matters if last decision was HOLD: if we're managing an open position,
-# always re-check fresh every cycle, since managing a live trade matters more
-# than the token savings from skipping.
+def explain_decision(decision, status, snapshot):
+    """Turns the raw decision into something a beginner can actually read in the logs."""
+    action = decision.get("action", "hold")
+    symbol = decision.get("symbol")
+    reasoning = decision.get("reasoning", "")
+    lines = ["", "=" * 68]
+
+    if action == "hold":
+        lines.append("DECISION: Do nothing this time (hold)")
+        lines.append("  Meaning: not buying anything right now, money stays as cash.")
+    elif action == "buy":
+        qty = decision.get("qty", 0)
+        price = (snapshot.get(symbol) or {}).get("price")
+        stop = decision.get("stop_loss_pct")
+        lines.append(f"DECISION: BUY {symbol}")
+        if price:
+            cost = qty * price
+            pct_of_pot = (cost / status["current_balance"] * 100) if status.get("current_balance") else 0
+            lines.append(f"  How many:  {qty} shares at about ${price:,.2f} each")
+            lines.append(f"  Total cost: about ${cost:,.2f}  ({pct_of_pot:.0f}% of this agent's ${status['current_balance']:,.2f})")
+        else:
+            lines.append(f"  How many:  {qty} shares")
+        if stop:
+            lines.append(f"  Safety net: if it falls {stop:.1f}%, we sell automatically to stop the loss growing")
+    elif action == "sell":
+        lines.append(f"DECISION: SELL {symbol}")
+        lines.append(f"  How many: {decision.get('qty', 0)} shares - turning this back into cash.")
+
+    if reasoning:
+        lines.append("")
+        lines.append("  WHY:")
+        words, line = reasoning.split(), ""
+        for w in words:
+            if len(line) + len(w) + 1 > 62:
+                lines.append(f"    {line}")
+                line = w
+            else:
+                line = f"{line} {w}".strip()
+        if line:
+            lines.append(f"    {line}")
+
+    if snapshot:
+        lines.append("")
+        lines.append("  WHAT IT WAS CHOOSING FROM:")
+        for sym, data in snapshot.items():
+            pct_key = next((k for k in data if k.endswith("_change_pct")), None)
+            pct = data.get(pct_key) if pct_key else None
+            mark = "  <-- picked" if sym == symbol else ""
+            if pct is None:
+                lines.append(f"    {sym:<6} ${data.get('price', 0):>9,.2f}{mark}")
+            else:
+                direction = "up" if pct >= 0 else "down"
+                lines.append(f"    {sym:<6} ${data.get('price', 0):>9,.2f}   {direction} {abs(pct):.1f}% over the last week{mark}")
+
+    lines.append("=" * 68)
+    return "\n".join(lines)
+
+
 _last_check = {"symbol": None, "price": None, "action": "hold"}
-SKIP_THRESHOLD_PCT = 0.005  # skip only if the top candidate's price moved less than 0.5%
+SKIP_THRESHOLD_PCT = 0.005
 
 
 def run_cycle(status):
@@ -185,11 +241,11 @@ def run_cycle(status):
     if (_last_check["action"] == "hold" and top_symbol is not None
             and _last_check["symbol"] == top_symbol and _last_check["price"] is not None
             and abs(top_price - _last_check["price"]) / _last_check["price"] < SKIP_THRESHOLD_PCT):
-        log.info(f"no material change since last check ({top_symbol} ~${top_price:.2f}) - skipping Claude call")
+        log.info(f"Nothing has changed much since last check ({top_symbol} still about ${top_price:,.2f}) - not asking the AI again, saving a call.")
         return
 
-    decision = ask_claude(status, snapshot)
-    log.info(f"decision: {decision}")
+    decision = ask_model(status, snapshot)
+    log.info(explain_decision(decision, status, snapshot))
 
     try:
         requests.post(f"{CONTROLLER_URL}/decision", json={
@@ -217,27 +273,88 @@ def run_cycle(status):
         "reasoning": decision["reasoning"],
     }
     resp = requests.post(f"{CONTROLLER_URL}/propose", json=proposal, timeout=15)
-    log.info(f"controller response: {resp.status_code} {resp.text}")
+    try:
+        body = resp.json()
+    except Exception:
+        log.info(f"  RESULT: unexpected reply from the controller ({resp.status_code})")
+        return
+
+    if body.get("executed"):
+        order = body.get("order", {})
+        filled = order.get("filled_price")
+        if filled:
+            log.info(f"  RESULT: Done - bought at ${filled:,.2f} per share.")
+        else:
+            log.info("  RESULT: Order placed. It will go through when the market next opens.")
+        if body.get("sizing_note"):
+            log.info(f"  NOTE:   The safety checks adjusted this - {body[chr(39)+chr(115)+chr(105)+chr(122)+chr(105)+chr(110)+chr(103)+chr(95)+chr(110)+chr(111)+chr(116)+chr(101)+chr(39)]}")
+    elif body.get("approved") is False:
+        log.info(f"  RESULT: Blocked by the safety rules - {body.get('reason')}")
+    else:
+        err = str(body.get("error", ""))
+        if "not fractionable" in err:
+            log.info("  RESULT: Rejected - this stock only sells in whole shares, and the amount worked out to a part-share.")
+        elif "insufficient buying power" in err:
+            log.info("  RESULT: Rejected - not enough spare cash in the account to cover this.")
+        else:
+            log.info(f"  RESULT: Order failed - {err}")
+
+
+SESSION_PLAIN_ENGLISH = {
+    "open": "US market is OPEN - checking often",
+    "pre-market": "US market opens later today - looking in occasionally",
+    "after-hours": "US market has closed for the day - looking in occasionally",
+    "closed": "US market is shut overnight - looking in occasionally",
+    "weekend": "Weekend, nothing is trading - just a slow pulse check",
+}
+
+
+def humanise(seconds):
+    if seconds < 120:
+        return f"{seconds} seconds"
+    if seconds < 3600:
+        mins = seconds / 60
+        if mins == int(mins):
+            return f"{int(mins)} minutes"
+        return f"{mins:.1f} minutes"
+    hours = seconds / 3600
+    return f"{hours:.0f} hours" if hours != 1 else "1 hour"
 
 
 if __name__ == "__main__":
-    log.info(f"agent {AGENT_NAME} starting - screening the full universe each cycle, top-N candidates via /screen")
-    RETRY_SECONDS = 30  # a failed connection is a transient problem, not a market-hours signal
+    log.info(f"agent {AGENT_NAME} starting - model={LLM_MODEL}")
+    RETRY_SECONDS = 30
     while True:
+        interval = None
         session = None
+        status = {}
         try:
             status = get_my_status()
             session = status.get("market_session", "closed")
+            # The Controller decides the pace - it knows the session, whether this
+            # agent is holding anything, and how much daily budget is left.
+            interval = status.get("next_cycle_seconds")
+
             if status["status"] != "active":
                 log.info(f"{AGENT_NAME} is {status['status']}, sleeping")
+            elif status.get("budget_remaining", 1) <= 0:
+                log.warning(
+                    f"Daily AI budget used up ({status.get('calls_today')} calls today). "
+                    f"Pausing until tomorrow - no trades will be made in the meantime."
+                )
             else:
                 run_cycle(status)
         except Exception as e:
             log.error(f"cycle failed: {e}")
 
-        if session is None:
-            sleep_for = RETRY_SECONDS  # couldn't even reach the Controller - retry soon, don't wait an hour
+        if interval is None:
+            sleep_for = RETRY_SECONDS
+            log.info(f"Couldn't reach the controller - trying again in {humanise(sleep_for)}.")
         else:
-            sleep_for = CYCLE_SECONDS if session == "open" else OFF_PEAK_CYCLE_SECONDS
-        log.info(f"market session: {session} - sleeping {sleep_for}s")
+            sleep_for = interval
+            note = SESSION_PLAIN_ENGLISH.get(session, session)
+            holding = " (holding a position, so checking less often)" if status.get("holding_position") and session == "open" else ""
+            used, remaining = status.get("calls_today", 0), status.get("budget_remaining", 0)
+            log.info(f"{note}{holding}. Next check in {humanise(sleep_for)}. "
+                     f"AI calls used today: {used} ({remaining} left).")
         time.sleep(sleep_for)

@@ -8,8 +8,13 @@ import requests
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestQuoteRequest, StockBarsRequest
+from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
+from alpaca.data.requests import (
+    StockLatestQuoteRequest, StockBarsRequest,
+    CryptoLatestQuoteRequest, CryptoBarsRequest,
+)
+from alpaca.trading.requests import GetAssetsRequest
+from alpaca.trading.enums import AssetClass, AssetStatus
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
 from datetime import datetime, timedelta
@@ -23,6 +28,9 @@ DATA_BASE_URL = "https://data.alpaca.markets"
 
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=PAPER)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+# Crypto data needs no API key for market data, but passing them is harmless
+# and keeps a single consistent construction pattern.
+crypto_data_client = CryptoHistoricalDataClient(API_KEY, SECRET_KEY)
 
 
 def get_account():
@@ -204,12 +212,17 @@ def screen_universe(symbols, lookback_days=5, top_n=5):
     return {s["symbol"]: s for s in scored[:top_n]}
 
 
-def submit_market_order(symbol, side, qty, client_order_id):
+def submit_market_order(symbol, side, qty, client_order_id, asset_class="stocks"):
+    # Crypto trades around the clock, so DAY (expires at the close) is invalid -
+    # it needs GTC. Crypto also supports fractional quantities, whereas many
+    # stocks do not, which is why qty is only forced to a whole number upstream
+    # for stocks.
+    tif = TimeInForce.GTC if asset_class == "crypto" else TimeInForce.DAY
     order = MarketOrderRequest(
         symbol=symbol,
         qty=qty,
         side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
-        time_in_force=TimeInForce.DAY,
+        time_in_force=tif,
         client_order_id=client_order_id,  # Alpaca de-dupes on this - safe to retry
     )
     result = trading_client.submit_order(order)
@@ -218,3 +231,84 @@ def submit_market_order(symbol, side, qty, client_order_id):
         "status": result.status,
         "filled_price": float(result.filled_avg_price) if result.filled_avg_price else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Crypto. Alpaca's screener endpoints are stocks-only, so discovery here works
+# differently: there are only a few dozen tradable pairs, so we can rank the
+# entire universe directly rather than needing a movers list to narrow it first.
+# ---------------------------------------------------------------------------
+
+def list_crypto_symbols():
+    """Every crypto pair this account can actually trade."""
+    req = GetAssetsRequest(asset_class=AssetClass.CRYPTO, status=AssetStatus.ACTIVE)
+    assets = trading_client.get_all_assets(req)
+    return [a.symbol for a in assets if a.tradable]
+
+
+def get_crypto_batch_quotes(symbols):
+    req = CryptoLatestQuoteRequest(symbol_or_symbols=symbols)
+    quotes = crypto_data_client.get_crypto_latest_quote(req)
+    prices = {}
+    for sym, q in quotes.items():
+        price = q.ask_price or q.bid_price
+        if price:
+            prices[sym] = float(price)
+    return prices
+
+
+def get_crypto_batch_bars(symbols, lookback_days=5):
+    req = CryptoBarsRequest(
+        symbol_or_symbols=symbols,
+        timeframe=TimeFrame.Day,
+        start=datetime.now() - timedelta(days=lookback_days * 3),
+    )
+    bar_set = crypto_data_client.get_crypto_bars(req)
+    out = {}
+    for sym in symbols:
+        try:
+            bars = bar_set[sym][-lookback_days:]
+            if bars:
+                out[sym] = bars
+        except (KeyError, IndexError):
+            continue
+    return out
+
+
+def get_crypto_price(symbol):
+    req = CryptoLatestQuoteRequest(symbol_or_symbols=symbol)
+    quote = crypto_data_client.get_crypto_latest_quote(req)[symbol]
+    return float(quote.ask_price or quote.bid_price)
+
+
+def screen_crypto(lookback_days=5, top_n=5):
+    """Rank the whole tradable crypto universe by recent momentum."""
+    symbols = list_crypto_symbols()
+    if not symbols:
+        return {}
+    prices = get_crypto_batch_quotes(symbols)
+    bars_by_symbol = get_crypto_batch_bars(symbols, lookback_days)
+
+    scored = []
+    for sym in symbols:
+        if sym not in prices or sym not in bars_by_symbol:
+            continue
+        bars = bars_by_symbol[sym]
+        price = prices[sym]
+        if len(bars) >= 2:
+            change_pct = (price - float(bars[0].close)) / float(bars[0].close) * 100
+        else:
+            continue
+        scored.append({
+            "symbol": sym,
+            "price": round(price, 4),
+            f"{lookback_days}d_change_pct": round(change_pct, 2),
+            "recent_closes": [round(float(b.close), 4) for b in bars],
+        })
+
+    scored.sort(key=lambda x: x[f"{lookback_days}d_change_pct"], reverse=True)
+    return {x["symbol"]: x for x in scored[:top_n]}
+
+
+def price_for(symbol, asset_class):
+    return get_crypto_price(symbol) if asset_class == "crypto" else get_latest_price(symbol)

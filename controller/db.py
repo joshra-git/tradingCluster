@@ -199,6 +199,83 @@ def record_usage(agent_name, input_tokens, output_tokens, cache_creation_tokens=
         )
 
 
+def ensure_equity_snapshots_table():
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS equity_snapshots (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                agent_id UUID NOT NULL REFERENCES agents(id),
+                cash NUMERIC(14,2) NOT NULL,
+                invested NUMERIC(14,2) NOT NULL,
+                total NUMERIC(14,2) NOT NULL,
+                taken_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_equity_agent_time ON equity_snapshots(agent_id, taken_at)")
+
+
+def record_equity_snapshot(agent_id, cash, invested):
+    """One row per agent per reconcile pass. This is the only record of how an
+    agent's value moved over time - without it, a value-over-time chart would
+    have nothing real to draw."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO equity_snapshots (agent_id, cash, invested, total) VALUES (%s, %s, %s, %s)",
+            (agent_id, cash, invested, cash + invested),
+        )
+
+
+def prune_equity_snapshots(keep_days=60):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM equity_snapshots WHERE taken_at < now() - (%s || ' days')::interval",
+                    (keep_days,))
+
+
+def agent_asset_class(agent):
+    """Which market this agent trades. Stored in its strategy blob at creation;
+    defaults to stocks for any agent created before asset classes existed."""
+    strategy = agent.get("strategy") or {}
+    return strategy.get("asset_class", "stocks")
+
+
+def symbols_claimed_by_others(agent_id):
+    """Symbols another agent has already committed to - either holding outright,
+    or with an order submitted that hasn't filled yet. Both count as 'taken',
+    because an order sitting unfilled at the broker is still real exposure
+    waiting to happen, not a free slot."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT symbol FROM positions
+            WHERE agent_id <> %s AND qty > 0
+            UNION
+            SELECT DISTINCT symbol FROM trades
+            WHERE agent_id <> %s AND side = 'buy' AND status = 'accepted'
+              AND created_at >= now() - interval '1 day'
+        """, (agent_id, agent_id))
+        return [r[0] for r in cur.fetchall()]
+
+
+def agent_has_position(agent_id):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM positions WHERE agent_id = %s AND qty > 0", (agent_id,))
+        return cur.fetchone()[0] > 0
+
+
+def calls_today():
+    """Total model calls made today across ALL agents - the daily budget is an
+    account-wide pool, not per-agent, since the provider rate limit applies to
+    the API key rather than to any individual pod."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM api_usage WHERE created_at::date = CURRENT_DATE")
+        return cur.fetchone()[0]
+
+
 def usage_today():
     with get_conn() as conn:
         cur = conn.cursor()
@@ -225,6 +302,8 @@ def ensure_positions_table():
                 UNIQUE (agent_id, symbol)
             )
         """)
+        cur.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS last_price NUMERIC(14,6)")
+        cur.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS last_price_at TIMESTAMPTZ")
 
 
 def apply_fill_to_position(agent_id, symbol, side, qty, price, stop_loss_pct=None):
@@ -264,6 +343,17 @@ def apply_fill_to_position(agent_id, symbol, side, qty, price, stop_loss_pct=Non
                 cur.execute("DELETE FROM positions WHERE id = %s", (pos["id"],))
             else:
                 cur.execute("UPDATE positions SET qty=%s, updated_at=now() WHERE id=%s", (new_qty, pos["id"]))
+
+
+def update_position_price(agent_id, symbol, price):
+    """Piggybacks on the price the exit checker already fetches every 60s, so the
+    dashboard can show live gain/loss without holding broker credentials itself."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE positions SET last_price = %s, last_price_at = now() WHERE agent_id = %s AND symbol = %s",
+            (price, agent_id, symbol),
+        )
 
 
 def list_open_positions():

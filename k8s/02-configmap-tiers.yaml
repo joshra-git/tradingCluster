@@ -1,6 +1,3 @@
-# This is the dial you turn as the system proves itself. Edit these values and
-# re-apply this file - no redeploy needed, the Controller re-reads it every
-# reconcile pass (default every 60s, see reconcile_interval_seconds below).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,28 +5,49 @@ metadata:
   namespace: trading
 data:
   config.yaml: |
+    # --- WHAT TO TRADE ---
+    # Both true = agents split 50/50 between them.
+    stocks_enabled: false
+    crypto_enabled: true
+
     # --- capital tiers ---
-    min_capital: 50000            # starting balance for a newly spawned agent
-    max_capital: 100000           # balance that triggers spawning a sibling
-    initial_pod_count: 2          # how many agents to auto-seed on first startup
-    cull_floor_fraction: 0.2      # agent gets culled below this fraction of min_capital
+    min_capital: 250
+    max_capital: 500
+    initial_pod_count: 2
+    cull_floor_fraction: 0.2
 
     # --- risk limits ---
-    max_position_pct: 0.25        # max fraction of an agent's balance in one position
-    max_daily_loss_pct: 0.10      # per-agent daily circuit breaker
-    pdt_day_trade_limit: 3        # account-wide day-trade warning threshold
+    max_position_pct: 0.25
+    max_daily_loss_pct: 0.10
+    pdt_day_trade_limit: 3
 
-    # --- exits, enforced by the Controller regardless of agent/LLM availability ---
+    # --- exits (crypto gets wider thresholds; it swings harder) ---
     exit_check_interval_seconds: 60
-    take_profit_pct: 15.0         # auto-sell once a position is up this much
-    default_stop_loss_pct: 8.0    # fallback if a position has no stop recorded
+    take_profit_pct: 15.0
+    default_stop_loss_pct: 8.0
+    crypto_stop_loss_pct: 12.0
+    crypto_take_profit_pct: 20.0
 
     # --- discovery and screening ---
-    discovery_interval_seconds: 900   # how often the real market gets scanned (15 min)
-    min_price_floor: 5.0              # excludes penny-stock traps from discovery
-    persistence_min_appearances: 2    # must appear in this many scans...
-    persistence_lookback: 3           # ...out of the last N, to count as a real signal
-    screen_top_n: 5                   # how many final candidates reach Claude each cycle
-    trend_window_days: 5              # lookback window for momentum scoring
+    discovery_interval_seconds: 900
+    min_price_floor: 5.0
+    persistence_min_appearances: 2
+    persistence_lookback: 3
+    screen_top_n: 5
+    trend_window_days: 5
 
+    # --- pacing: stocks follow the US market session ---
+    cycle_open_seconds: 90
+    cycle_weekday_seconds: 600
+    cycle_weekend_seconds: 3600
+    holding_slowdown_factor: 3
+
+    # --- pacing: crypto follows YOUR waking hours, not an exchange bell ---
+    crypto_timezone: "Australia/Brisbane"
+    crypto_active_start_hour: 7
+    crypto_active_end_hour: 22
+    cycle_crypto_active_seconds: 120
+    cycle_crypto_quiet_seconds: 1800
+
+    daily_call_budget: 1400
     reconcile_interval_seconds: 60

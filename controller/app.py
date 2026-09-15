@@ -33,8 +33,10 @@ def propose():
     cfg = tier_config.load()
 
     # attach a reference price so the risk layer can size the position correctly
+    asset_class = db.agent_asset_class(agent)
+    body["asset_class"] = asset_class
     try:
-        ref_price = alpaca_client.get_latest_price(body["symbol"])
+        ref_price = alpaca_client.price_for(body["symbol"], asset_class)
     except Exception as e:
         return jsonify({"approved": False, "reason": f"could not fetch quote: {e}"}), 502
     body["ref_price"] = ref_price
@@ -42,7 +44,10 @@ def propose():
     todays_pnl = db.todays_trade_pnl(agent["id"])
     account_day_trades = db.account_day_trade_count(days=5)
 
-    approved, reason, sized_qty = risk.validate_proposal(agent, body, cfg, todays_pnl, account_day_trades)
+    claimed = db.symbols_claimed_by_others(agent["id"])
+    approved, reason, sized_qty = risk.validate_proposal(
+        agent, body, cfg, todays_pnl, account_day_trades, claimed_symbols=claimed
+    )
 
     client_order_id = f"{agent_name}-{uuid.uuid4()}"
     trade = db.record_trade(
@@ -62,7 +67,8 @@ def propose():
 
     try:
         result = alpaca_client.submit_market_order(
-            symbol=body["symbol"], side=body["side"], qty=sized_qty, client_order_id=client_order_id
+            symbol=body["symbol"], side=body["side"], qty=sized_qty,
+            client_order_id=client_order_id, asset_class=asset_class
         )
     except Exception as e:
         db.update_trade_status(client_order_id, "failed", reject_reason=str(e))
@@ -86,31 +92,37 @@ def propose():
 
 @app.route("/screen", methods=["GET"])
 def screen():
+    """Returns the shortlist for whichever market the requesting agent trades.
+    Stocks go through the stored discovery scans; crypto ranks its (much
+    smaller) tradable universe directly, since Alpaca's screener is stocks-only."""
     cfg = tier_config.load()
+    agent_name = request.args.get("agent_name")
+    asset_class = "stocks"
+    if agent_name:
+        agent = db.get_agent(agent_name)
+        if agent:
+            asset_class = db.agent_asset_class(agent)
+
     try:
-        pool = db.persistent_candidates(
-            min_appearances=cfg["persistence_min_appearances"], lookback_batches=cfg["persistence_lookback"]
-        )
-        if not pool:
-            return jsonify({})  # not enough scan history yet, or nothing persistent right now
-        shortlist = alpaca_client.screen_universe(pool, lookback_days=cfg["trend_window_days"], top_n=cfg["screen_top_n"])
-        db.save_shortlist(shortlist)  # cache for the dashboard - no extra Alpaca calls needed to read it
+        if asset_class == "crypto":
+            shortlist = alpaca_client.screen_crypto(
+                lookback_days=cfg["trend_window_days"], top_n=cfg["screen_top_n"]
+            )
+        else:
+            pool = db.persistent_candidates(
+                min_appearances=cfg["persistence_min_appearances"],
+                lookback_batches=cfg["persistence_lookback"],
+            )
+            if not pool:
+                return jsonify({})
+            shortlist = alpaca_client.screen_universe(
+                pool, lookback_days=cfg["trend_window_days"], top_n=cfg["screen_top_n"]
+            )
+        db.save_shortlist(shortlist)
     except Exception as e:
+        log.error(f"screen failed for {asset_class}: {e}")
         return jsonify({"error": str(e)}), 502
     return jsonify(shortlist)
-
-
-@app.route("/decision", methods=["POST"])
-def record_decision():
-    """Logs EVERY decision an agent makes, including holds - so 'what is this
-    agent currently thinking' is a real, persistent answer, not something that
-    only ever existed in a pod's transient logs."""
-    body = request.get_json(force=True)
-    agent = db.get_agent(body["agent_name"])
-    if agent is None:
-        return jsonify({"ok": False, "reason": "unknown agent"}), 404
-    db.record_decision(agent["id"], body["action"], body.get("symbol"), body.get("reasoning"))
-    return jsonify({"ok": True})
 
 
 @app.route("/discover-debug", methods=["GET"])
@@ -146,10 +158,47 @@ def heartbeat():
     agent_name = request.get_json(force=True)["agent_name"]
     db.heartbeat(agent_name)
     agent = db.get_agent(agent_name)
+    cfg = tier_config.load()
+    used = db.calls_today()
+    budget = cfg["daily_call_budget"]
+
+    asset_class = db.agent_asset_class(agent)
+    session = market_hours.session_for(asset_class, cfg)
+    holding = db.agent_has_position(agent["id"])
+    interval = market_hours.interval_for(asset_class, session, holding, cfg)
+
+    # Tell the agent what it already owns. Without this the model decides in a
+    # vacuum every cycle - it cannot judge "add to this" vs "diversify into
+    # something else", because it has no idea it already holds anything.
+    holdings = []
+    for pos in db.list_open_positions():
+        if pos["agent_name"] != agent_name:
+            continue
+        entry = float(pos["avg_entry_price"] or 0)
+        qty = float(pos["qty"])
+        try:
+            now_price = alpaca_client.price_for(pos["symbol"], asset_class)
+        except Exception:
+            now_price = entry
+        holdings.append({
+            "symbol": pos["symbol"],
+            "qty": round(qty, 6),
+            "bought_at": round(entry, 4),
+            "now": round(now_price, 4),
+            "value": round(qty * now_price, 2),
+            "change_pct": round((now_price - entry) / entry * 100, 2) if entry else 0,
+        })
+
     return jsonify({
         "status": agent["status"],
         "current_balance": float(agent["current_balance"]),
-        "market_session": market_hours.get_market_session(),
+        "holdings": holdings,
+        "asset_class": asset_class,
+        "market_session": session,
+        "holding_position": holding,
+        "next_cycle_seconds": interval,
+        "calls_today": used,
+        "budget_remaining": max(budget - used, 0),
     })
 
 
@@ -160,6 +209,18 @@ def inject_capital():
     db.set_pool_balance(db.get_pool_balance() + amount)
     db.log_capital_event(agent_id=None, event_type="injection", amount=amount)
     return jsonify({"pool_balance": db.get_pool_balance()})
+
+
+@app.route("/decision", methods=["POST"])
+def record_decision():
+    """Logs EVERY decision including holds, so 'what is this agent thinking' is a
+    persistent answer rather than something that only existed in a pod's logs."""
+    body = request.get_json(force=True)
+    agent = db.get_agent(body["agent_name"])
+    if agent is None:
+        return jsonify({"ok": False, "reason": "unknown agent"}), 404
+    db.record_decision(agent["id"], body["action"], body.get("symbol"), body.get("reasoning"))
+    return jsonify({"ok": True})
 
 
 @app.route("/usage", methods=["POST"])
@@ -205,14 +266,24 @@ def enforce_exits():
         if entry <= 0 or qty <= 0:
             continue
 
+        agent_row = db.get_agent(pos["agent_name"])
+        pos_asset_class = db.agent_asset_class(agent_row) if agent_row else "stocks"
         try:
-            price = alpaca_client.get_latest_price(symbol)
+            price = alpaca_client.price_for(symbol, pos_asset_class)
         except Exception as e:
             log.error(f"exit check: could not price {symbol}: {e}")
             continue
 
+        db.update_position_price(pos["agent_id"], symbol, price)
         change_pct = (price - entry) / entry * 100
-        stop_pct = float(pos["stop_loss_pct"] or cfg["default_stop_loss_pct"])
+        # Crypto moves far harder than stocks, so an 8% stop there would fire on
+        # ordinary noise. Its thresholds are configured separately.
+        if pos_asset_class == "crypto":
+            default_stop = cfg["crypto_stop_loss_pct"]
+            take_profit_pct = cfg["crypto_take_profit_pct"]
+        else:
+            default_stop = cfg["default_stop_loss_pct"]
+        stop_pct = float(pos["stop_loss_pct"] or default_stop)
 
         reason = None
         if change_pct <= -stop_pct:
@@ -227,8 +298,10 @@ def enforce_exits():
         client_order_id = f"exit-{pos['agent_name']}-{uuid.uuid4()}"
         agent = db.get_agent(pos["agent_name"])
         try:
+            sell_qty = qty if pos_asset_class == "crypto" else int(qty)
             result = alpaca_client.submit_market_order(
-                symbol=symbol, side="sell", qty=int(qty), client_order_id=client_order_id
+                symbol=symbol, side="sell", qty=sell_qty,
+                client_order_id=client_order_id, asset_class=pos_asset_class
             )
         except Exception as e:
             log.error(f"exit order failed for {symbol}: {e}")
@@ -237,7 +310,7 @@ def enforce_exits():
         filled_price = result.get("filled_price")
         db.record_trade(
             agent_id=agent["id"], client_order_id=client_order_id, symbol=symbol,
-            side="sell", qty=int(qty), stop_loss_pct=None,
+            side="sell", qty=sell_qty, stop_loss_pct=None,
             reasoning=f"Automatic exit by Controller - {reason}",
             status="filled" if filled_price else "accepted",
         )
@@ -247,8 +320,8 @@ def enforce_exits():
             filled_at=datetime.now(timezone.utc) if filled_price else None,
         )
         if filled_price:
-            db.update_balance(pos["agent_name"], float(agent["current_balance"]) + int(qty) * filled_price)
-            db.apply_fill_to_position(agent["id"], symbol, "sell", int(qty), filled_price)
+            db.update_balance(pos["agent_name"], float(agent["current_balance"]) + sell_qty * filled_price)
+            db.apply_fill_to_position(agent["id"], symbol, "sell", sell_qty, filled_price)
 
 
 def reconcile():
@@ -282,6 +355,18 @@ def reconcile():
             k8s_client.delete_agent_pod(agent["name"])
 
     # --- deploy pool capital toward agents that are actually trending up ---
+    # Record each agent's value so the detail page has real history to draw.
+    try:
+        positions = db.list_open_positions()
+        for agent in agents:
+            invested = sum(
+                float(p["qty"]) * float(p["last_price"] or p["avg_entry_price"] or 0)
+                for p in positions if p["agent_name"] == agent["name"]
+            )
+            db.record_equity_snapshot(agent["id"], float(agent["current_balance"]), invested)
+    except Exception as e:
+        log.error(f"equity snapshot failed: {e}")
+
     pool = db.get_pool_balance()
     if pool >= cfg["min_capital"]:
         trending = [a for a in agents
@@ -338,14 +423,19 @@ def bootstrap():
                     f"for {n} agents at ${per_pod:.2f} each - not seeding anything")
         return
 
-    log.info(f"bootstrap: account has ${available:.2f}, seeding {n} agents at ${per_pod:.2f} each")
+    classes = tier_config.enabled_asset_classes(cfg)
+    log.info(f"bootstrap: account has ${available:.2f}, seeding {n} agents at ${per_pod:.2f} each "
+             f"across {classes}")
     for i in range(1, n + 1):
         name = f"agent-{i:03d}"
-        strategy = {"symbols": "SPY,QQQ"}
+        # Round-robin across whatever is enabled. One class enabled = every agent
+        # gets it; both enabled = agents alternate, giving the 50/50 split.
+        asset_class = classes[(i - 1) % len(classes)]
+        strategy = {"asset_class": asset_class}
         try:
             db.create_agent(name, min_capital=per_pod, max_capital=cfg["max_capital"], strategy=strategy)
             k8s_client.spawn_agent_pod(name, strategy)
-            log.info(f"bootstrap: created {name} with ${per_pod:.2f}")
+            log.info(f"bootstrap: created {name} trading {asset_class} with ${per_pod:.2f}")
         except Exception as e:
             log.error(f"bootstrap: failed to create {name}, continuing with remaining agents: {e}")
 
@@ -354,6 +444,8 @@ def run_discovery_scan():
     """Runs on its own schedule, independent of agent count or agent cycle timing -
     so having 2 agents (or 20) doesn't multiply how often the real market gets scanned."""
     cfg = tier_config.load()
+    if not cfg["stocks_enabled"]:
+        return  # crypto ranks its own universe directly; no scan history needed
     try:
         candidates = alpaca_client.discover_candidates(min_price=cfg["min_price_floor"])
         batch_id = db.record_market_scan(candidates)
@@ -367,6 +459,7 @@ if __name__ == "__main__":
     db.ensure_usage_table()
     db.ensure_positions_table()
     db.ensure_market_scans_table()
+    db.ensure_equity_snapshots_table()
     db.ensure_decisions_table()
     db.ensure_shortlist_cache_table()
     bootstrap()
