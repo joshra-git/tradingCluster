@@ -180,8 +180,13 @@ TEMPLATE = """
   <div class="rail-stat"><span class="label">Active agents</span><span class="value">{{ agent_count }}</span></div>
   <div class="rail-stat"><span class="label">Unallocated pool</span><span class="value">${{ "%.2f"|format(pool_balance) }}</span></div>
   <div class="rail-stat"><span class="label">Trades today</span><span class="value">{{ trades_today }}</span></div>
-  <div class="rail-stat"><span class="label">Model calls today</span><span class="value">{{ calls_today }} / {{ daily_call_budget }}</span></div>
-  <div class="rail-note">Shared budget across all agents. Gemini's free tier allows 1,500 requests/day; agents stop calling once this cap is reached and resume tomorrow.</div>
+  <div class="rail-stat"><span class="label">Model calls today</span><span class="value">{{ calls_today }}</span></div>
+  <div class="rail-stat"><span class="label">Spend today</span><span class="value">A${{ "%.2f"|format(spend_aud_today) }}</span></div>
+  <div class="rail-stat"><span class="label">Spend last 7 days</span><span class="value">A${{ "%.2f"|format(spend_aud_week) }}</span></div>
+  <div class="rail-note">
+    {% if cost_actual %}Actual billed spend from Anthropic{% else %}Estimated from token counts &mdash; set ANTHROPIC_ADMIN_KEY for billed figures{% endif %}.
+    US${{ "%.2f"|format(spend_usd_week) }} converted at {{ "%.4f"|format(fx_rate) }}{% if not fx_live %} (fallback rate){% endif %}.
+  </div>
 </aside>
 
 <main>
@@ -269,6 +274,49 @@ TEMPLATE = """
       {% endfor %}
     </div>
     {% if not agents %}<div class="empty">No agents yet</div>{% endif %}
+  </section>
+
+  <section>
+    <h2>Model usage &amp; cost</h2>
+    {% if usage_days %}
+    <table style="width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <tr>
+        <th style="text-align:left;font-weight:500;color:var(--text-faint);font-size:0.72rem;padding:0.65rem 1rem;border-bottom:1px solid var(--border);background:var(--surface-2)">Date</th>
+        <th style="text-align:right;font-weight:500;color:var(--text-faint);font-size:0.72rem;padding:0.65rem 1rem;border-bottom:1px solid var(--border);background:var(--surface-2)">Calls</th>
+        <th style="text-align:right;font-weight:500;color:var(--text-faint);font-size:0.72rem;padding:0.65rem 1rem;border-bottom:1px solid var(--border);background:var(--surface-2)">Tokens in</th>
+        <th style="text-align:right;font-weight:500;color:var(--text-faint);font-size:0.72rem;padding:0.65rem 1rem;border-bottom:1px solid var(--border);background:var(--surface-2)">Tokens out</th>
+        <th style="text-align:right;font-weight:500;color:var(--text-faint);font-size:0.72rem;padding:0.65rem 1rem;border-bottom:1px solid var(--border);background:var(--surface-2)">Per call</th>
+        <th style="text-align:right;font-weight:500;color:var(--text-faint);font-size:0.72rem;padding:0.65rem 1rem;border-bottom:1px solid var(--border);background:var(--surface-2)">USD</th>
+        <th style="text-align:right;font-weight:500;color:var(--text-faint);font-size:0.72rem;padding:0.65rem 1rem;border-bottom:1px solid var(--border);background:var(--surface-2)">AUD</th>
+      </tr>
+      {% for d in usage_days %}
+      <tr>
+        <td style="padding:0.6rem 1rem;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:0.8rem">{{ d.day }}</td>
+        <td style="padding:0.6rem 1rem;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:0.8rem;text-align:right">{{ d.calls }}</td>
+        <td style="padding:0.6rem 1rem;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:0.8rem;text-align:right;color:var(--text-dim)">{{ "{:,}".format(d.inp) }}</td>
+        <td style="padding:0.6rem 1rem;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:0.8rem;text-align:right;color:var(--text-dim)">{{ "{:,}".format(d.outp) }}</td>
+        <td style="padding:0.6rem 1rem;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:0.8rem;text-align:right;color:var(--text-faint)">${{ "%.4f"|format(d.per_call) }}</td>
+        <td style="padding:0.6rem 1rem;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:0.8rem;text-align:right">${{ "%.4f"|format(d.usd) }}</td>
+        <td style="padding:0.6rem 1rem;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:0.8rem;text-align:right;font-weight:500">A${{ "%.4f"|format(d.aud) }}</td>
+      </tr>
+      {% endfor %}
+      {% set t_usd = usage_days | sum(attribute='usd') %}
+      {% set t_calls = usage_days | sum(attribute='calls') %}
+      <tr style="background:var(--surface-2)">
+        <td style="padding:0.6rem 1rem;font-family:var(--mono);font-size:0.8rem;font-weight:600">Total</td>
+        <td style="padding:0.6rem 1rem;font-family:var(--mono);font-size:0.8rem;text-align:right;font-weight:600">{{ t_calls }}</td>
+        <td colspan="3"></td>
+        <td style="padding:0.6rem 1rem;font-family:var(--mono);font-size:0.8rem;text-align:right;font-weight:600">${{ "%.4f"|format(t_usd) }}</td>
+        <td style="padding:0.6rem 1rem;font-family:var(--mono);font-size:0.8rem;text-align:right;font-weight:600">A${{ "%.4f"|format(t_usd * fx_rate) }}</td>
+      </tr>
+    </table>
+    <div style="color:var(--text-faint);font-size:0.72rem;margin-top:0.6rem">
+      {% if cost_actual %}Billed figures from Anthropic.{% else %}Estimated from token counts at Sonnet pricing &mdash; cross-check against console.anthropic.com.{% endif %}
+      Converted at {{ "%.4f"|format(fx_rate) }}{% if not fx_live %} (fallback rate){% endif %}.
+    </div>
+    {% else %}
+    <div class="empty">No model calls recorded yet</div>
+    {% endif %}
   </section>
 
   <section>
@@ -384,6 +432,74 @@ def dashboard():
             "stale": p_.get("last_price_at") is None,
         })
 
+    # Real spend if the Controller has an admin key; otherwise fall back to an
+    # estimate from token counts. The dashboard says plainly which it is showing.
+    fx_rate, fx_live = 1.50, False
+    try:
+        fx = query("SELECT rate, live FROM fx_rates WHERE pair = 'USDAUD'")
+        if fx:
+            fx_rate, fx_live = float(fx[0]["rate"]), bool(fx[0]["live"])
+    except Exception:
+        pass
+
+    cost_actual = True
+    try:
+        row = query("""
+            SELECT COALESCE(SUM(usd),0) AS wk FROM api_costs
+            WHERE day >= CURRENT_DATE - INTERVAL '6 days'
+        """)[0]
+        spend_usd_week = float(row["wk"])
+        today_row = query("SELECT COALESCE(SUM(usd),0) AS d FROM api_costs WHERE day = CURRENT_DATE")[0]
+        spend_usd_today = float(today_row["d"])
+        if spend_usd_week == 0:
+            raise ValueError("no cost rows yet")
+    except Exception:
+        cost_actual = False
+        try:
+            t = query("""
+                SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(output_tokens),0) AS o,
+                       COALESCE(SUM(cache_read_tokens),0) AS cr, COALESCE(SUM(cache_creation_tokens),0) AS cw
+                FROM api_usage WHERE created_at >= CURRENT_DATE - INTERVAL '6 days'
+            """)[0]
+            spend_usd_week = (t["i"]/1e6*3 + t["o"]/1e6*15 + t["cr"]/1e6*0.3 + t["cw"]/1e6*3.75)
+            t2 = query("""
+                SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(output_tokens),0) AS o
+                FROM api_usage WHERE created_at::date = CURRENT_DATE
+            """)[0]
+            spend_usd_today = (t2["i"]/1e6*3 + t2["o"]/1e6*15)
+        except Exception:
+            spend_usd_week = spend_usd_today = 0.0
+
+    spend_aud_week = spend_usd_week * fx_rate
+    spend_aud_today = spend_usd_today * fx_rate
+
+    try:
+        usage_rows = query("""
+            SELECT created_at::date AS day,
+                   COUNT(*) AS calls,
+                   COALESCE(SUM(input_tokens),0) AS inp,
+                   COALESCE(SUM(output_tokens),0) AS outp,
+                   COALESCE(SUM(cache_read_tokens),0) AS cread,
+                   COALESCE(SUM(cache_creation_tokens),0) AS cwrite
+            FROM api_usage
+            GROUP BY 1 ORDER BY 1 DESC LIMIT 10
+        """)
+    except Exception:
+        usage_rows = []
+
+    usage_days = []
+    for r in usage_rows:
+        # Cache reads bill at 10% of input, cache writes at 125%. Falls back to
+        # plain input/output pricing for rows written before caching existed.
+        usd = (float(r["inp"])/1e6*3 + float(r["outp"])/1e6*15
+               + float(r["cread"] or 0)/1e6*0.3 + float(r["cwrite"] or 0)/1e6*3.75)
+        usage_days.append({
+            "day": r["day"], "calls": r["calls"],
+            "inp": int(r["inp"]), "outp": int(r["outp"]),
+            "usd": usd, "aud": usd * fx_rate,
+            "per_call": usd / r["calls"] if r["calls"] else 0,
+        })
+
     try:
         calls_today = query(
             "SELECT COUNT(*) AS c FROM api_usage WHERE created_at::date = CURRENT_DATE"
@@ -415,6 +531,9 @@ def dashboard():
         total_balance=total_balance, pool_balance=float(pool), trades_today=trades_today,
         symbol_info=SYMBOL_INFO, calls_today=calls_today, daily_call_budget=DAILY_CALL_BUDGET,
         watching=watching, thinking=thinking, holdings_by_agent=holdings_by_agent,
+        spend_aud_week=spend_aud_week, spend_aud_today=spend_aud_today, usage_days=usage_days,
+        spend_usd_week=spend_usd_week, cost_actual=cost_actual,
+        fx_rate=fx_rate, fx_live=fx_live,
     )
 
 

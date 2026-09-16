@@ -58,6 +58,13 @@ spec:
                 secretKeyRef:
                   name: trading-secrets
                   key: ALPACA_SECRET_KEY
+            # Optional. Without it, spend falls back to a token-based estimate.
+            - name: ANTHROPIC_ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: trading-secrets
+                  key: ANTHROPIC_ADMIN_KEY
+                  optional: true
           volumeMounts:
             - name: tier-config
               mountPath: /etc/trading-config

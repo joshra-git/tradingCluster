@@ -10,6 +10,7 @@ import alpaca_client
 import k8s_client
 import tier_config
 import market_hours
+import anthropic_admin
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("controller")
@@ -522,6 +523,34 @@ def bootstrap():
             log.error(f"bootstrap: failed to create {name}, continuing with remaining agents: {e}")
 
 
+def sync_api_costs():
+    """Pull REAL spend from Anthropic rather than estimating it from tokens, and
+    refresh the USD->AUD rate. Both degrade gracefully: no admin key means the
+    dashboard keeps showing its token-based estimate, clearly labelled as one."""
+    cfg = tier_config.load()
+
+    rate, live = anthropic_admin.fetch_usd_to_aud(fallback=cfg["usd_aud_fallback_rate"])
+    try:
+        db.upsert_fx_rate("USDAUD", rate, live)
+    except Exception as e:
+        log.error(f"could not store FX rate: {e}")
+
+    if not anthropic_admin.is_enabled():
+        log.info("no ANTHROPIC_ADMIN_KEY set - spend will stay an estimate from token counts")
+        return
+
+    rows = anthropic_admin.fetch_cost_report(days=cfg["cost_report_days"])
+    for r in rows:
+        try:
+            db.upsert_api_cost(r["date"], r["usd"])
+        except Exception as e:
+            log.error(f"could not store cost for {r['date']}: {e}")
+    if rows:
+        total = sum(r["usd"] for r in rows)
+        log.info(f"cost report: {len(rows)} days, ${total:.4f} USD total "
+                 f"(${total * rate:.2f} AUD at {rate:.4f})")
+
+
 def run_discovery_scan():
     """Runs on its own schedule, independent of agent count or agent cycle timing -
     so having 2 agents (or 20) doesn't multiply how often the real market gets scanned."""
@@ -542,6 +571,7 @@ if __name__ == "__main__":
     db.ensure_positions_table()
     db.ensure_market_scans_table()
     db.ensure_equity_snapshots_table()
+    db.ensure_api_costs_table()
     db.ensure_decisions_table()
     db.ensure_shortlist_cache_table()
     bootstrap()
@@ -550,6 +580,8 @@ if __name__ == "__main__":
                        next_run_time=datetime.now())
     scheduler.add_job(reconcile, "interval", seconds=cfg["reconcile_interval_seconds"])
     scheduler.add_job(enforce_exits, "interval", seconds=cfg["exit_check_interval_seconds"],
+                       next_run_time=datetime.now())
+    scheduler.add_job(sync_api_costs, "interval", seconds=cfg["cost_sync_interval_seconds"],
                        next_run_time=datetime.now())
     scheduler.add_job(run_discovery_scan, "interval", seconds=cfg["discovery_interval_seconds"],
                        next_run_time=datetime.now())  # also fire immediately on startup, not just after the first interval

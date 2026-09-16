@@ -159,6 +159,20 @@ crash-looping agent could otherwise run up a real bill overnight.
 
 ---
 
+## Cost tracking
+
+`controller/anthropic_admin.py` pulls **real billed spend** from Anthropic's
+Usage & Cost Admin API every 6 hours, stored in `api_costs`. This needs an
+`ANTHROPIC_ADMIN_KEY` (an `sk-ant-admin...` key, different from the inference
+key) and an **organisation** — the Admin API does not exist for individual
+accounts. Without the key everything falls back to a token-based estimate,
+clearly labelled as such on the dashboard.
+
+Anthropic bills in USD. The AUD figure uses a USD→AUD rate fetched daily from
+Frankfurter (free, keyless, ECB-backed), stored in `fx_rates`, falling back to
+`usd_aud_fallback_rate` if unreachable. The dashboard marks a fallback rate so a
+stale number is never mistaken for a live one.
+
 ## Database
 
 | Table | Holds |
@@ -172,6 +186,8 @@ crash-looping agent could otherwise run up a real bill overnight.
 | `api_usage` | tokens per call, for burn tracking |
 | `equity_snapshots` | per-agent value over time, for the detail page chart |
 | `market_scans` | discovery results (stocks only) |
+| `api_costs` | real billed USD per day from the Admin API |
+| `fx_rates` | USD→AUD rate, with a flag for whether it is live or fallback |
 
 Tables are created/migrated at Controller startup via `ensure_*_table()`
 functions using `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`.

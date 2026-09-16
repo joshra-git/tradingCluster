@@ -62,6 +62,12 @@ DEFAULTS = {
     "cycle_crypto_active_seconds": 120,
     "cycle_crypto_quiet_seconds": 1800,
 
+    # Real spend, pulled from Anthropic's Usage & Cost Admin API when an admin
+    # key is available. Anthropic bills in USD, so AUD needs a conversion rate.
+    "cost_sync_interval_seconds": 21600,  # every 6h; cost data lags a little anyway
+    "cost_report_days": 14,
+    "usd_aud_fallback_rate": 1.50,        # used only if the FX lookup fails
+    "weekly_cost_target_aud": 5.00,       # what you are willing to spend to run this
     "daily_call_budget": 1400,
     "reconcile_interval_seconds": 60,
 }

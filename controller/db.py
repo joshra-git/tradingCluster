@@ -224,6 +224,44 @@ def record_usage(agent_name, input_tokens, output_tokens, cache_creation_tokens=
         )
 
 
+def ensure_api_costs_table():
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS api_costs (
+                day DATE PRIMARY KEY,
+                usd NUMERIC(14,6) NOT NULL,
+                fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fx_rates (
+                pair TEXT PRIMARY KEY,
+                rate NUMERIC(14,6) NOT NULL,
+                live BOOLEAN NOT NULL DEFAULT false,
+                fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+
+
+def upsert_api_cost(day, usd):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO api_costs (day, usd, fetched_at) VALUES (%s, %s, now())
+            ON CONFLICT (day) DO UPDATE SET usd = EXCLUDED.usd, fetched_at = now()
+        """, (day, usd))
+
+
+def upsert_fx_rate(pair, rate, live):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO fx_rates (pair, rate, live, fetched_at) VALUES (%s, %s, %s, now())
+            ON CONFLICT (pair) DO UPDATE SET rate = EXCLUDED.rate, live = EXCLUDED.live, fetched_at = now()
+        """, (pair, rate, live))
+
+
 def ensure_equity_snapshots_table():
     with get_conn() as conn:
         cur = conn.cursor()
