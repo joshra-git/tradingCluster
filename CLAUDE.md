@@ -97,6 +97,16 @@ were compromised, it could not touch money or data directly.
 `max_capital` is **per agent, not per account**. At min 250 / max 500, one
 agent doubling its own money triggers a spawn.
 
+### Trailing stops, not fixed take-profit
+
+`trailing_stop_enabled` (default on) measures the stop down from the highest
+price seen since entry (`positions.high_water_mark`), not from the entry price.
+A position that keeps climbing drags its stop up behind it and is never
+force-sold for "winning too much" — it exits only when the move actually turns
+over by `stop_loss_pct` from its peak. This replaced a fixed `take_profit_pct`,
+which capped every winner at +15% regardless of whether it had further to run.
+Costs no model calls; it is pure arithmetic in `enforce_exits()`.
+
 ### Exits are deterministic, not AI
 
 `enforce_exits()` runs every 60s in the Controller. It prices every open
@@ -123,6 +133,25 @@ Also: `holding_slowdown_factor` (3×) slows an agent that already holds
 something, because exits are automatic and it is waiting on a price, not
 hunting. And agents skip the Claude call entirely when the shortlist top
 candidate has moved less than 0.5% since last check.
+
+**Hunting vs holding is the core pacing split.** An agent with deployable cash
+is hunting and looks every `cycle_hunting_seconds` (90s) — a good entry is
+time-sensitive and missing it costs more than the call. An agent already holding
+looks every `cycle_holding_seconds` (1h), because the trailing stop handles the
+exit without any model involvement; the periodic check exists only so the model
+can bail early for a judgement reason. Market shut = zero calls either way.
+
+**Agents only think when a decision is possible.** `market_hours.should_think()`
+returns False when the market is shut (roughly two thirds of a weekday plus all
+weekend for stocks), or when the agent is fully invested. Both cases would be
+paying the model to tell you something the database already knows. Combined
+with hourly pacing during the open, this is ~13-65 calls/week rather than ~5,000.
+
+**The biggest cost lever is `can_act`.** A fully invested agent has no decision
+to make — exits are enforced deterministically without any model call — so the
+Controller tells it to stop thinking until it has `min_cash_to_act` deployable
+again. Without this, running cost exceeded the owner's entire profit target
+($50-64/week of API calls chasing $25/week of profit). Do not remove it.
 
 `daily_call_budget` caps total calls/day across all agents. It was originally
 a Gemini free-tier limit; now it is a **cost circuit breaker**. Keep it — a
@@ -186,6 +215,14 @@ relevant.
 does not sell anything at the broker. Wiping the ledger while positions are
 open leaves the account margined with no record of why. Always
 `close_all_positions()` first, or reset the paper account.
+
+**Alpaca orders do not fill synchronously.** `submit_order()` returns
+`pending_new` with no fill price; the fill lands moments later. `sync_orders()`
+polls for this every 20s and is what actually moves the ledger. Before it
+existed, balances never decremented (one agent bought 3x its allocation),
+positions were never recorded, and **stop-losses could never fire** because
+`enforce_exits()` iterates open positions and the table was always empty. Never
+assume a submitted order is a completed one.
 
 **Jinja escapes HTML entities inside `{{ }}`.** Use the literal character
 (`−`) not `&minus;` in expressions.

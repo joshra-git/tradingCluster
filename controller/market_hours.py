@@ -50,23 +50,32 @@ def session_for(asset_class, cfg):
     return get_crypto_session(cfg) if asset_class == "crypto" else get_market_session()
 
 
-def interval_for(asset_class, session, holding, cfg):
-    """How long this agent should wait before thinking again."""
-    if asset_class == "crypto":
-        interval = (cfg["cycle_crypto_active_seconds"] if session == "active"
-                    else cfg["cycle_crypto_quiet_seconds"])
-        busy = session == "active"
-    else:
-        if session == "open":
-            interval = cfg["cycle_open_seconds"]
-        elif session == "weekend":
-            interval = cfg["cycle_weekend_seconds"]
-        else:
-            interval = cfg["cycle_weekday_seconds"]
-        busy = session == "open"
+def should_think(asset_class, session, can_act, cfg):
+    """Whether it is worth spending a model call this cycle, and how long to wait
+    before the next one.
 
-    if holding and busy:
-        # Exits are enforced by the Controller every 60s regardless, so an agent
-        # sitting on a position is waiting on a price, not hunting a new one.
-        interval = int(interval * cfg["holding_slowdown_factor"])
-    return interval
+    The split that matters: an agent with cash is HUNTING - it needs to look hard
+    and often, because a good entry is time-sensitive and missing it costs more
+    than the call does. An agent already holding is WAITING - the trailing stop
+    handles the exit without any model involvement, so it only checks in
+    occasionally in case there is a judgement reason to get out early.
+
+    When the market is shut, neither applies: nothing can be bought or sold, so
+    no call is justified at all.
+
+    Returns (think: bool, interval_seconds: int, why: str).
+    """
+    tradable = (session == "active") if asset_class == "crypto" else (session == "open")
+
+    if not tradable:
+        if asset_class == "crypto":
+            return False, cfg["cycle_crypto_quiet_seconds"], "outside your active hours"
+        idle = cfg["cycle_weekend_seconds"] if session == "weekend" else cfg["cycle_weekday_seconds"]
+        return False, idle, f"US market is {session}"
+
+    if can_act:
+        interval = (cfg["cycle_crypto_active_seconds"] if asset_class == "crypto"
+                    else cfg["cycle_hunting_seconds"])
+        return True, interval, "hunting for an entry"
+
+    return True, cfg["cycle_holding_seconds"], "holding - periodic check only"

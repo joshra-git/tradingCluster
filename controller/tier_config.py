@@ -27,6 +27,13 @@ DEFAULTS = {
     "pdt_day_trade_limit": 3,          # stocks only; crypto has no PDT rule
 
     # --- exits, enforced by the Controller ---
+    # Cost control. A fully invested agent has nothing to decide - the Controller
+    # exits positions without any model call - so it stops thinking until it has
+    # enough spare cash to actually open a position again.
+    "trailing_stop_enabled": True,        # stop follows the price up; winners run
+    "min_cash_to_act": 25.0,              # deployable cash below this = don't call the model
+    "cycle_fully_invested_seconds": 3600, # how often a fully invested agent looks anyway
+    "order_sync_interval_seconds": 20,    # how often we ask Alpaca what actually filled
     "exit_check_interval_seconds": 60,
     "take_profit_pct": 15.0,
     "default_stop_loss_pct": 8.0,
@@ -42,10 +49,10 @@ DEFAULTS = {
     "trend_window_days": 5,
 
     # --- pacing: stocks follow the US market session ---
-    "cycle_open_seconds": 90,
+    "cycle_hunting_seconds": 90,          # has cash: look hard and often for an entry
+    "cycle_holding_seconds": 3600,        # already holding: occasional check, trailing stop does the work
     "cycle_weekday_seconds": 600,
     "cycle_weekend_seconds": 3600,
-    "holding_slowdown_factor": 3,
 
     # --- pacing: crypto trades 24/7, so YOUR waking hours define "active"
     #     rather than an exchange bell. Outside these hours it idles cheaply.

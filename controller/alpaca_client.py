@@ -212,6 +212,18 @@ def screen_universe(symbols, lookback_days=5, top_n=5):
     return {s["symbol"]: s for s in scored[:top_n]}
 
 
+def get_order(alpaca_order_id):
+    """Fetch an order's current state. Needed because submit_order returns before
+    the fill lands - Alpaca answers with pending_new and no fill price, then fills
+    asynchronously. Without polling this, the ledger never learns what happened."""
+    o = trading_client.get_order_by_id(alpaca_order_id)
+    return {
+        "status": str(o.status).split(".")[-1].lower(),
+        "filled_qty": float(o.filled_qty or 0),
+        "filled_price": float(o.filled_avg_price) if o.filled_avg_price else None,
+    }
+
+
 def submit_market_order(symbol, side, qty, client_order_id, asset_class="stocks"):
     # Crypto trades around the clock, so DAY (expires at the close) is invalid -
     # it needs GTC. Crypto also supports fractional quantities, whereas many

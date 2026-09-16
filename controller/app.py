@@ -44,6 +44,15 @@ def propose():
     todays_pnl = db.todays_trade_pnl(agent["id"])
     account_day_trades = db.account_day_trade_count(days=5)
 
+    # One order in flight per agent. Until a fill is confirmed the ledger balance
+    # is stale, so approving a second buy would spend money the agent no longer
+    # has - this is exactly how one agent ended up holding 3x its allocation.
+    if body["side"] == "buy" and db.agent_pending_buys(agent["id"]) > 0:
+        return jsonify({
+            "approved": False,
+            "reason": "an earlier buy from this agent hasn't been confirmed filled yet",
+        }), 200
+
     claimed = db.symbols_claimed_by_others(agent["id"])
     approved, reason, sized_qty = risk.validate_proposal(
         agent, body, cfg, todays_pnl, account_day_trades, claimed_symbols=claimed
@@ -98,7 +107,6 @@ def screen():
     cfg = tier_config.load()
     agent_name = request.args.get("agent_name")
     asset_class = "stocks"
-    agent = None
     if agent_name:
         agent = db.get_agent(agent_name)
         if agent:
@@ -123,15 +131,6 @@ def screen():
     except Exception as e:
         log.error(f"screen failed for {asset_class}: {e}")
         return jsonify({"error": str(e)}), 502
-
-    # Shared awareness: tell this agent which candidates a sibling agent already
-    # holds (or has a buy working on), so it can steer toward something else on
-    # its own - the fleet spreading out by choice, not just by the risk layer's
-    # hard block after the fact.
-    if agent:
-        claims = db.claims_by_other_agents(agent["id"])
-        for sym, data in shortlist.items():
-            data["claimed_by"] = claims.get(sym)
     return jsonify(shortlist)
 
 
@@ -175,7 +174,6 @@ def heartbeat():
     asset_class = db.agent_asset_class(agent)
     session = market_hours.session_for(asset_class, cfg)
     holding = db.agent_has_position(agent["id"])
-    interval = market_hours.interval_for(asset_class, session, holding, cfg)
 
     # Tell the agent what it already owns. Without this the model decides in a
     # vacuum every cycle - it cannot judge "add to this" vs "diversify into
@@ -199,10 +197,25 @@ def heartbeat():
             "change_pct": round((now_price - entry) / entry * 100, 2) if entry else 0,
         })
 
+    # Can this agent actually do anything with the cash it has? If it is fully
+    # invested, there is no decision to make - exits are enforced deterministically
+    # by the Controller with no model call, so asking Claude "still holding?" every
+    # cycle is pure spend for no information. This is the single biggest lever on
+    # running cost: a fully invested agent thinks rarely instead of constantly.
+    spare = float(agent["current_balance"])
+    deployable = spare * cfg["max_position_pct"]
+    can_act = deployable >= cfg["min_cash_to_act"]
+
+    think, interval, why = market_hours.should_think(asset_class, session, can_act, cfg)
+
     return jsonify({
         "status": agent["status"],
         "current_balance": float(agent["current_balance"]),
         "holdings": holdings,
+        "can_act": can_act,
+        "should_think": think,
+        "idle_reason": why,
+        "deployable": round(deployable, 2),
         "asset_class": asset_class,
         "market_session": session,
         "holding_position": holding,
@@ -260,6 +273,52 @@ def list_positions():
 # changes are picked up together on a predictable cadence.
 # ---------------------------------------------------------------------------
 
+def sync_orders():
+    """THE most important loop in this system. submit_order() returns before the
+    fill happens, so without this the ledger never learns that money left the
+    account - an agent would keep 'spending' a balance it no longer has, and no
+    position would ever be recorded (which also means stop-losses could never
+    fire, since enforce_exits iterates open positions).
+
+    Runs frequently, is idempotent, and only ever acts on a trade once because it
+    moves the row out of 'accepted' as soon as it resolves."""
+    for t in db.pending_orders():
+        try:
+            o = alpaca_client.get_order(t["alpaca_order_id"])
+        except Exception as e:
+            log.error(f"order sync: could not read {t['alpaca_order_id']}: {e}")
+            continue
+
+        status = o["status"]
+        if status in ("canceled", "cancelled", "expired", "rejected", "suspended"):
+            db.update_trade_status(t["client_order_id"], "failed", reject_reason=f"order {status}")
+            log.info(f"order sync: {t['symbol']} {status} - no money moved")
+            continue
+
+        if status != "filled" or not o["filled_price"]:
+            continue  # still working; check again next pass
+
+        qty = o["filled_qty"] or float(t["qty"])
+        price = o["filled_price"]
+        agent = db.get_agent(t["agent_name"])
+        if agent is None:
+            continue
+
+        db.update_trade_status(
+            t["client_order_id"], "filled",
+            alpaca_order_id=t["alpaca_order_id"], filled_price=price,
+            filled_at=datetime.now(timezone.utc),
+        )
+        delta = qty * price * (1 if t["side"] == "sell" else -1)
+        db.update_balance(t["agent_name"], float(agent["current_balance"]) + delta)
+        db.apply_fill_to_position(
+            agent["id"], t["symbol"], t["side"], qty, price,
+            float(t["stop_loss_pct"]) if t["stop_loss_pct"] else None,
+        )
+        log.info(f"order sync: {t['agent_name']} {t['side']} {qty} {t['symbol']} "
+                 f"filled at ${price:,.4f} - balance now ${float(agent['current_balance']) + delta:,.2f}")
+
+
 def enforce_exits():
     """Deterministic exit rules, run by the Controller every reconcile pass rather
     than waiting on an agent's next cycle or an LLM call succeeding. A stop-loss that
@@ -296,10 +355,23 @@ def enforce_exits():
         stop_pct = float(pos["stop_loss_pct"] or default_stop)
 
         reason = None
-        if change_pct <= -stop_pct:
-            reason = f"stop-loss hit: {change_pct:.2f}% vs -{stop_pct:.2f}% limit"
-        elif change_pct >= take_profit_pct:
-            reason = f"take-profit hit: {change_pct:.2f}% vs +{take_profit_pct:.2f}% target"
+        if cfg["trailing_stop_enabled"]:
+            # Measure the stop down from the highest price seen, not from entry.
+            # A position that keeps climbing drags its own stop up behind it and is
+            # never force-sold for "winning too much"; it only exits when the move
+            # actually turns over by stop_pct from its peak.
+            db.update_high_water_mark(agent_row["id"] if agent_row else pos["agent_id"], symbol, price)
+            hwm = max(float(pos["high_water_mark"] or 0), entry, price)
+            drop_from_peak = (price - hwm) / hwm * 100
+            if drop_from_peak <= -stop_pct:
+                gain = (hwm - entry) / entry * 100
+                reason = (f"trailing stop: fell {abs(drop_from_peak):.2f}% from its peak of "
+                          f"${hwm:,.4f} (which was {gain:+.1f}% above entry)")
+        else:
+            if change_pct <= -stop_pct:
+                reason = f"stop-loss hit: {change_pct:.2f}% vs -{stop_pct:.2f}% limit"
+            elif change_pct >= take_profit_pct:
+                reason = f"take-profit hit: {change_pct:.2f}% vs +{take_profit_pct:.2f}% target"
 
         if not reason:
             continue
@@ -474,11 +546,12 @@ if __name__ == "__main__":
     db.ensure_shortlist_cache_table()
     bootstrap()
     scheduler = BackgroundScheduler()
+    scheduler.add_job(sync_orders, "interval", seconds=cfg["order_sync_interval_seconds"],
+                       next_run_time=datetime.now())
     scheduler.add_job(reconcile, "interval", seconds=cfg["reconcile_interval_seconds"])
     scheduler.add_job(enforce_exits, "interval", seconds=cfg["exit_check_interval_seconds"],
                        next_run_time=datetime.now())
     scheduler.add_job(run_discovery_scan, "interval", seconds=cfg["discovery_interval_seconds"],
                        next_run_time=datetime.now())  # also fire immediately on startup, not just after the first interval
-    scheduler.add_job(db.prune_equity_snapshots, "interval", hours=24)  # keep the per-minute snapshot table bounded
     scheduler.start()
     app.run(host="0.0.0.0", port=8080)

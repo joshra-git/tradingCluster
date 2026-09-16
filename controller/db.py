@@ -98,6 +98,31 @@ def update_trade_status(client_order_id, status, reject_reason=None, alpaca_orde
         )
 
 
+def agent_pending_buys(agent_id):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM trades
+            WHERE agent_id = %s AND side = 'buy' AND status = 'accepted'
+              AND alpaca_order_id IS NOT NULL
+        """, (agent_id,))
+        return cur.fetchone()[0]
+
+
+def pending_orders():
+    """Trades we submitted but never saw fill. These are the ones whose money has
+    left the account without the ledger knowing."""
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT t.*, a.name AS agent_name FROM trades t
+            JOIN agents a ON a.id = t.agent_id
+            WHERE t.status = 'accepted' AND t.alpaca_order_id IS NOT NULL
+            ORDER BY t.created_at
+        """)
+        return cur.fetchall()
+
+
 def todays_trade_pnl(agent_id):
     """Rough realized P&L for today, used by the daily-loss circuit breaker."""
     with get_conn() as conn:
@@ -241,43 +266,22 @@ def agent_asset_class(agent):
     return strategy.get("asset_class", "stocks")
 
 
-def claims_by_other_agents(agent_id):
-    """Which symbols other agents have already committed to, and which agent -
-    either holding outright, or with a buy order submitted that hasn't filled
-    yet. Both count as 'taken', because an order sitting unfilled at the broker
-    is still real exposure waiting to happen, not a free slot.
-
-    This is the fleet's shared awareness: surfaced to every agent via /screen
-    *before* it decides, so agents spread out on their own instead of only
-    being blocked after the fact by the diversification rule in risk.py. There
-    is no separate 'claims' table - it's derived live from positions/trades,
-    which are already the source of truth for who holds what."""
+def symbols_claimed_by_others(agent_id):
+    """Symbols another agent has already committed to - either holding outright,
+    or with an order submitted that hasn't filled yet. Both count as 'taken',
+    because an order sitting unfilled at the broker is still real exposure
+    waiting to happen, not a free slot."""
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
-            SELECT symbol, agent_name, ts FROM (
-                SELECT p.symbol, a.name AS agent_name, p.updated_at AS ts
-                FROM positions p JOIN agents a ON a.id = p.agent_id
-                WHERE p.agent_id <> %s AND p.qty > 0
-                UNION ALL
-                SELECT t.symbol, a.name AS agent_name, t.created_at AS ts
-                FROM trades t JOIN agents a ON a.id = t.agent_id
-                WHERE t.agent_id <> %s AND t.side = 'buy' AND t.status = 'accepted'
-                  AND t.created_at >= now() - interval '1 day'
-            ) claims
-            ORDER BY ts DESC
+            SELECT DISTINCT symbol FROM positions
+            WHERE agent_id <> %s AND qty > 0
+            UNION
+            SELECT DISTINCT symbol FROM trades
+            WHERE agent_id <> %s AND side = 'buy' AND status = 'accepted'
+              AND created_at >= now() - interval '1 day'
         """, (agent_id, agent_id))
-        claims = {}
-        for symbol, agent_name, _ts in cur.fetchall():
-            claims.setdefault(symbol, agent_name)  # most recent claimant wins
-        return claims
-
-
-def symbols_claimed_by_others(agent_id):
-    """Plain symbol list version of claims_by_other_agents, for the risk layer's
-    deterministic diversification check - it only needs to know what's taken,
-    not by whom."""
-    return list(claims_by_other_agents(agent_id).keys())
+        return [r[0] for r in cur.fetchall()]
 
 
 def agent_has_position(agent_id):
@@ -324,6 +328,10 @@ def ensure_positions_table():
             )
         """)
         cur.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS last_price NUMERIC(14,6)")
+        # Highest price seen since entry. The trailing stop is measured down from
+        # this, not from the entry price - that is what lets a winner keep running
+        # while still protecting the gain it has already made.
+        cur.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS high_water_mark NUMERIC(14,6)")
         cur.execute("ALTER TABLE positions ADD COLUMN IF NOT EXISTS last_price_at TIMESTAMPTZ")
 
 
@@ -364,6 +372,16 @@ def apply_fill_to_position(agent_id, symbol, side, qty, price, stop_loss_pct=Non
                 cur.execute("DELETE FROM positions WHERE id = %s", (pos["id"],))
             else:
                 cur.execute("UPDATE positions SET qty=%s, updated_at=now() WHERE id=%s", (new_qty, pos["id"]))
+
+
+def update_high_water_mark(agent_id, symbol, price):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE positions SET high_water_mark = %s
+            WHERE agent_id = %s AND symbol = %s
+              AND (high_water_mark IS NULL OR high_water_mark < %s)
+        """, (price, agent_id, symbol, price))
 
 
 def update_position_price(agent_id, symbol, price):
