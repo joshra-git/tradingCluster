@@ -547,12 +547,20 @@ def save_shortlist(shortlist_dict):
     triggering its own Alpaca calls just because someone loaded the page."""
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("DELETE FROM shortlist_cache")
+        # Upsert rather than delete-then-insert: both agents hit /screen at the
+        # same moment, and one would delete rows while the other was inserting
+        # them, producing a duplicate-key error and a 502.
+        cur.execute("DELETE FROM shortlist_cache WHERE symbol <> ALL(%s)",
+                    (list(shortlist_dict.keys()) or [''],))
         for sym, data in shortlist_dict.items():
             pct_key = next((k for k in data if k.endswith("_change_pct")), None)
             pct = data.get(pct_key) if pct_key else None
             cur.execute(
-                "INSERT INTO shortlist_cache (symbol, price, pct_change) VALUES (%s, %s, %s)",
+                """INSERT INTO shortlist_cache (symbol, price, pct_change)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (symbol) DO UPDATE
+                   SET price = EXCLUDED.price, pct_change = EXCLUDED.pct_change,
+                       updated_at = now()""",
                 (sym, data.get("price"), pct),
             )
 

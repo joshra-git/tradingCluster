@@ -1,4 +1,5 @@
 import logging
+from zoneinfo import ZoneInfo
 import uuid
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
@@ -10,9 +11,22 @@ import alpaca_client
 import k8s_client
 import tier_config
 import market_hours
+import safe_universe
 import anthropic_admin
 
-logging.basicConfig(level=logging.INFO)
+# Log in Brisbane time, not UTC. Container logs default to UTC, which makes it
+# genuinely hard to line up "when did it buy that" against your own day.
+class _BrisbaneFormatter(logging.Formatter):
+    _TZ = ZoneInfo("Australia/Brisbane")
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=self._TZ)
+        return dt.strftime(datefmt or "%H:%M:%S")
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_BrisbaneFormatter("%(asctime)s AEST  %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler], force=True)
 log = logging.getLogger("controller")
 
 app = Flask(__name__)
@@ -53,6 +67,11 @@ def propose():
             "approved": False,
             "reason": "an earlier buy from this agent hasn't been confirmed filled yet",
         }), 200
+
+    # Large caps mostly allow fractional shares, which is what makes a $650
+    # stock buyable on a $300 budget. Only ask once per symbol.
+    if asset_class != "crypto":
+        body["fractionable"] = alpaca_client.is_fractionable(body["symbol"])
 
     claimed = db.symbols_claimed_by_others(agent["id"])
     approved, reason, sized_qty = risk.validate_proposal(
@@ -116,6 +135,10 @@ def screen():
     try:
         if asset_class == "crypto":
             shortlist = alpaca_client.screen_crypto(
+                lookback_days=cfg["trend_window_days"], top_n=cfg["screen_top_n"]
+            )
+        elif cfg.get("universe_mode", "safe") == "safe":
+            shortlist = safe_universe.screen(
                 lookback_days=cfg["trend_window_days"], top_n=cfg["screen_top_n"]
             )
         else:
@@ -329,6 +352,7 @@ def enforce_exits():
     cfg = tier_config.load()
     take_profit_pct = cfg["take_profit_pct"]
 
+    broker_prices = alpaca_client.broker_position_prices()
     for pos in db.list_open_positions():
         symbol = pos["symbol"]
         qty = float(pos["qty"])
@@ -339,7 +363,11 @@ def enforce_exits():
         agent_row = db.get_agent(pos["agent_name"])
         pos_asset_class = db.agent_asset_class(agent_row) if agent_row else "stocks"
         try:
-            price = alpaca_client.price_for(symbol, pos_asset_class)
+            # Prefer the broker's own price for held positions - it is the
+            # consolidated tape, not a single-venue quote.
+            price = broker_prices.get(symbol)
+            if price is None:
+                price = alpaca_client.price_for(symbol, pos_asset_class)
         except Exception as e:
             log.error(f"exit check: could not price {symbol}: {e}")
             continue
@@ -430,11 +458,23 @@ def reconcile():
                 break
 
         # --- scale down: cull agents that have dropped near zero ---
-        if balance <= floor:
-            log.info(f"culling {agent['name']} at balance {balance} (floor {floor})")
+        # Cull on TOTAL value, not cash. An agent that is fully invested has
+        # almost no cash by definition - judging it on cash alone kills healthy
+        # agents for the crime of having bought something.
+        held_value = sum(
+            float(p["qty"]) * float(p["last_price"] or p["avg_entry_price"] or 0)
+            for p in db.list_open_positions() if p["agent_name"] == agent["name"]
+        )
+        total_value = balance + held_value
+        if held_value > 0:
+            log.debug(f"{agent['name']}: cash {balance:.2f} + positions {held_value:.2f} = {total_value:.2f}")
+
+        if total_value <= floor:
+            log.info(f"culling {agent['name']} at total value {total_value:.2f} "
+                     f"(cash {balance:.2f} + positions {held_value:.2f}, floor {floor})")
             db.set_status(agent["name"], "culled")
-            db.set_pool_balance(db.get_pool_balance() + balance)
-            db.log_capital_event(agent["id"], "cull_return", balance)
+            db.set_pool_balance(db.get_pool_balance() + max(balance, 0))
+            db.log_capital_event(agent["id"], "cull_return", max(balance, 0))
             k8s_client.delete_agent_pod(agent["name"])
 
     # --- deploy pool capital toward agents that are actually trending up ---

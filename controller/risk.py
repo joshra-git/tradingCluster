@@ -22,6 +22,9 @@ def validate_proposal(agent, proposal, config, todays_pnl, account_day_trade_cou
     # Crypto trades in fractions and has no pattern-day-trader rule, so two of
     # the checks below simply do not apply to it.
     is_crypto = proposal.get("asset_class") == "crypto"
+    # Crypto is always fractional; stocks depend on the asset. Fractional sizing
+    # is what lets a $650 share fit inside a $300 position budget at all.
+    allows_fractions = is_crypto or proposal.get("fractionable", False)
 
     # 1. Mandatory stop-loss on every buy. No exceptions - this is the one rule
     #    that most directly caps how bad a single bad call can get.
@@ -45,15 +48,16 @@ def validate_proposal(agent, proposal, config, todays_pnl, account_day_trade_cou
         # and rounding down is the safe direction (never spend more than intended).
         budget = balance * max_position_pct
         raw_qty = budget / max(ref_price, 0.01)
-        if is_crypto:
-            max_qty = round(raw_qty, 6)   # fractional units are fine here
+        if allows_fractions:
+            max_qty = round(raw_qty, 6)
             if max_qty <= 0:
                 return False, f"position budget of ${budget:,.2f} is too small to buy any {symbol}", 0
         else:
-            max_qty = int(raw_qty)        # whole shares only
+            max_qty = int(raw_qty)
             if max_qty < 1:
-                return False, (f"one share of {symbol} costs more than this agent's "
-                               f"per-position limit of ${budget:,.2f}"), 0
+                return False, (f"one whole share of {symbol} costs more than this agent's "
+                               f"per-position limit of ${budget:,.2f}, and it cannot be "
+                               f"bought in fractions"), 0
         return True, f"resized to respect max_position_pct ({max_position_pct:.0%})", max_qty
 
     # 4. Daily loss circuit breaker, per agent.
@@ -67,9 +71,9 @@ def validate_proposal(agent, proposal, config, todays_pnl, account_day_trade_cou
     if not is_crypto and account_day_trade_count >= pdt_threshold and balance < 25000:
         return False, "approaching PDT day-trade limit for the account - blocking further same-day round trips", 0
 
-    if side == "buy" and not is_crypto and int(qty) < 1:
+    if side == "buy" and not allows_fractions and int(qty) < 1:
         return False, "proposed quantity rounds down to zero whole shares", 0
 
-    if is_crypto:
+    if allows_fractions:
         return True, None, round(qty, 6)
     return True, None, int(qty) if side == "buy" else qty

@@ -26,6 +26,12 @@ SECRET_KEY = os.environ["ALPACA_SECRET_KEY"]
 PAPER = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
 DATA_BASE_URL = "https://data.alpaca.markets"
 
+# Quality filters - these exist because the scanner asks for "top gainers",
+# which structurally surfaces stocks that have already spiked.
+MAX_RUNUP_PCT = float(os.environ.get("MAX_RUNUP_PCT", "25"))          # skip if already up this much
+MAX_DAILY_SWING_PCT = float(os.environ.get("MAX_DAILY_SWING_PCT", "8"))  # skip violently choppy names
+MIN_AVG_VOLUME = float(os.environ.get("MIN_AVG_VOLUME", "500000"))    # skip illiquid names
+
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=PAPER)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 # Crypto data needs no API key for market data, but passing them is harmless
@@ -201,10 +207,30 @@ def screen_universe(symbols, lookback_days=5, top_n=5):
             change_pct = (price - float(bars[0].close)) / float(bars[0].close) * 100
         else:
             change_pct = None
+        # Reject what has already gone parabolic. Buying something up 70% in a
+        # week means buying from people sitting on profits who are looking to
+        # take them - which is how GTBP was bought near its top.
+        if change_pct is not None and change_pct > MAX_RUNUP_PCT:
+            continue
+
+        # Reject violently choppy names. A stock swinging 15% a day gaps through
+        # stop-losses, so the exit fills far below where the stop was set.
+        highs_lows = [(float(b.high) - float(b.low)) / float(b.low) * 100 for b in bars if b.low]
+        avg_swing = sum(highs_lows) / len(highs_lows) if highs_lows else 0
+        if avg_swing > MAX_DAILY_SWING_PCT:
+            continue
+
+        # Reject thin volume - illiquid names cannot be exited cleanly.
+        avg_vol = sum(float(b.volume or 0) for b in bars) / len(bars)
+        if avg_vol < MIN_AVG_VOLUME:
+            continue
+
         scored.append({
             "symbol": sym,
             "price": round(price, 2),
             f"{lookback_days}d_change_pct": round(change_pct, 2) if change_pct is not None else None,
+            "avg_daily_swing_pct": round(avg_swing, 1),
+            "avg_volume": int(avg_vol),
             "recent_closes": [round(float(b.close), 2) for b in bars],
         })
 
@@ -222,6 +248,26 @@ def get_order(alpaca_order_id):
         "filled_qty": float(o.filled_qty or 0),
         "filled_price": float(o.filled_avg_price) if o.filled_avg_price else None,
     }
+
+
+_FRACTIONABLE_CACHE = {}
+
+
+def is_fractionable(symbol):
+    """Most large caps allow fractional shares; thin micro caps do not. Asking
+    Alpaca beats guessing - guessing is what produced the repeated
+    'asset X is not fractionable' rejections. Cached because this rarely
+    changes and the answer is needed on every sizing decision."""
+    if symbol in _FRACTIONABLE_CACHE:
+        return _FRACTIONABLE_CACHE[symbol]
+    try:
+        asset = trading_client.get_asset(symbol)
+        result = bool(getattr(asset, "fractionable", False))
+    except Exception as e:
+        log.warning(f"could not check fractionability of {symbol}, assuming whole shares: {e}")
+        result = False
+    _FRACTIONABLE_CACHE[symbol] = result
+    return result
 
 
 def submit_market_order(symbol, side, qty, client_order_id, asset_class="stocks"):
@@ -293,6 +339,14 @@ def get_crypto_price(symbol):
     return float(quote.ask_price or quote.bid_price)
 
 
+def _base_coin(symbol):
+    """UNI/USD, UNI/USDC, UNI/USDT and UNI/BTC are all the same coin quoted
+    against different currencies. Without collapsing them, a shortlist of five
+    can be two actual coins wearing five names - and the diversification rule
+    cannot catch it, because the ticker strings genuinely differ."""
+    return symbol.split("/")[0]
+
+
 def screen_crypto(lookback_days=5, top_n=5):
     """Rank the whole tradable crypto universe by recent momentum."""
     symbols = list_crypto_symbols()
@@ -319,7 +373,33 @@ def screen_crypto(lookback_days=5, top_n=5):
         })
 
     scored.sort(key=lambda x: x[f"{lookback_days}d_change_pct"], reverse=True)
-    return {x["symbol"]: x for x in scored[:top_n]}
+    # Keep only the USD pair of each coin. Stablecoin pairs track the USD pair
+    # within a fraction of a percent, and BTC-denominated pairs are priced in
+    # bitcoin, which makes dollar position sizing meaningless.
+    seen, unique = set(), []
+    for x in scored:
+        base = _base_coin(x["symbol"])
+        if base in seen or not x["symbol"].endswith("/USD"):
+            continue
+        seen.add(base)
+        unique.append(x)
+
+    return {x["symbol"]: x for x in unique[:top_n]}
+
+
+def broker_position_prices():
+    """The broker's own consolidated price for everything we hold. IEX quotes
+    (what get_latest_price uses) come from a single small exchange and were
+    running 12-20% above reality on thin names - which inflated trailing-stop
+    high-water marks and made stops fire at the wrong level."""
+    out = {}
+    try:
+        for p in trading_client.get_all_positions():
+            if p.current_price:
+                out[p.symbol] = float(p.current_price)
+    except Exception as e:
+        log.error(f"could not read broker position prices: {e}")
+    return out
 
 
 def price_for(symbol, asset_class):

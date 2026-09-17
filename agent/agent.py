@@ -13,10 +13,24 @@ import os
 import time
 import json
 import logging
+from zoneinfo import ZoneInfo
+from datetime import datetime
 import requests
 from anthropic import Anthropic
 
-logging.basicConfig(level=logging.INFO)
+# Log in Brisbane time, not UTC. Container logs default to UTC, which makes it
+# genuinely hard to line up "when did it buy that" against your own day.
+class _BrisbaneFormatter(logging.Formatter):
+    _TZ = ZoneInfo("Australia/Brisbane")
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=self._TZ)
+        return dt.strftime(datefmt or "%H:%M:%S")
+
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(_BrisbaneFormatter("%(asctime)s AEST  %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler], force=True)
 log = logging.getLogger("agent")
 
 AGENT_NAME = os.environ["AGENT_NAME"]
@@ -285,9 +299,13 @@ def run_cycle(status):
         if filled:
             log.info(f"  RESULT: Done - bought at ${filled:,.2f} per share.")
         else:
-            log.info("  RESULT: Order placed. It will go through when the market next opens.")
-        if body.get("sizing_note"):
-            log.info(f"  NOTE:   The safety checks adjusted this - {body[chr(39)+chr(115)+chr(105)+chr(122)+chr(105)+chr(110)+chr(103)+chr(95)+chr(110)+chr(111)+chr(116)+chr(101)+chr(39)]}")
+            if status.get("asset_class") == "crypto":
+                log.info("  RESULT: Order placed - waiting for it to fill.")
+            else:
+                log.info("  RESULT: Order placed. It will go through when the market next opens.")
+        note = body.get("sizing_note")
+        if note:
+            log.info(f"  NOTE:   The safety checks adjusted this - {note}")
     elif body.get("approved") is False:
         log.info(f"  RESULT: Blocked by the safety rules - {body.get('reason')}")
     else:
