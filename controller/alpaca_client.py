@@ -367,9 +367,9 @@ def screen_crypto(lookback_days=5, top_n=5):
             continue
         scored.append({
             "symbol": sym,
-            "price": round(price, 4),
+            "price": float(f"{price:.8g}"),
             f"{lookback_days}d_change_pct": round(change_pct, 2),
-            "recent_closes": [round(float(b.close), 4) for b in bars],
+            "recent_closes": [float(f"{float(b.close):.8g}") for b in bars],
         })
 
     scored.sort(key=lambda x: x[f"{lookback_days}d_change_pct"], reverse=True)

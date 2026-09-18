@@ -151,6 +151,33 @@ def screen():
             shortlist = alpaca_client.screen_universe(
                 pool, lookback_days=cfg["trend_window_days"], top_n=cfg["screen_top_n"]
             )
+        # Drop anything another agent already holds. Without this an agent can
+        # pick the same coin every cycle, get rejected by the diversification
+        # rule, and burn a model call each time repeating itself.
+        if agent_name:
+            agent_row = db.get_agent(agent_name)
+            if agent_row:
+                taken = set(db.symbols_claimed_by_others(agent_row["id"]))
+                shortlist = {k: v for k, v in shortlist.items() if k not in taken}
+
+        # Drop anything another agent already holds. Without this an agent can
+        # pick the same coin every cycle, get rejected by the diversification
+        # rule, and burn a model call each time repeating itself.
+        if agent_name:
+            agent_row = db.get_agent(agent_name)
+            if agent_row:
+                taken = set(db.symbols_claimed_by_others(agent_row["id"]))
+                shortlist = {k: v for k, v in shortlist.items() if k not in taken}
+
+        # Drop anything another agent already holds. Without this an agent can
+        # pick the same coin every cycle, get rejected by the diversification
+        # rule, and burn a model call each time repeating itself.
+        if agent_name:
+            agent_row = db.get_agent(agent_name)
+            if agent_row:
+                taken = set(db.symbols_claimed_by_others(agent_row["id"]))
+                shortlist = {k: v for k, v in shortlist.items() if k not in taken}
+
         db.save_shortlist(shortlist)
     except Exception as e:
         log.error(f"screen failed for {asset_class}: {e}")

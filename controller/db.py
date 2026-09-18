@@ -124,16 +124,15 @@ def pending_orders():
 
 
 def todays_trade_pnl(agent_id):
-    """Rough realized P&L for today, used by the daily-loss circuit breaker."""
+    """Realised profit/loss today. Deliberately NOT cash flow - a buy is not a
+    loss, and treating it as one halts an agent the instant it invests."""
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute(
-            """SELECT COALESCE(SUM(CASE WHEN side = 'sell' THEN qty * filled_price
-                                         ELSE -qty * filled_price END), 0)
-               FROM trades
-               WHERE agent_id = %s AND status = 'filled' AND filled_at::date = CURRENT_DATE""",
-            (agent_id,),
-        )
+        cur.execute("""
+            SELECT COALESCE(SUM(amount), 0) FROM capital_events
+            WHERE agent_id = %s AND event_type = 'realised_pnl'
+              AND created_at::date = CURRENT_DATE
+        """, (agent_id,))
         return cur.fetchone()[0]
 
 
@@ -404,7 +403,18 @@ def apply_fill_to_position(agent_id, symbol, side, qty, price, stop_loss_pct=Non
                     )
         elif side == "sell":
             if pos is None:
-                return  # selling with no tracked position - nothing to reconcile against
+                return
+            # Realised profit or loss on the portion being sold. This is what a
+            # daily loss limit should measure - not cash flow, which counts every
+            # purchase as a loss and halts an agent the moment it buys anything.
+            entry = float(pos["avg_entry_price"] or 0)
+            if entry:
+                realised = qty * (price - entry)
+                cur.execute(
+                    "INSERT INTO capital_events (agent_id, event_type, amount, note) "
+                    "VALUES (%s, 'realised_pnl', %s, %s)",
+                    (agent_id, realised, symbol),
+                )  # selling with no tracked position - nothing to reconcile against
             new_qty = float(pos["qty"]) - qty
             if new_qty <= 0.0001:
                 cur.execute("DELETE FROM positions WHERE id = %s", (pos["id"],))
