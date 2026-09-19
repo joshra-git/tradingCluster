@@ -12,6 +12,7 @@ rather than a different build.
 import os
 import time
 import json
+import math
 import logging
 from zoneinfo import ZoneInfo
 from datetime import datetime
@@ -241,8 +242,69 @@ def explain_decision(decision, status, snapshot):
     return "\n".join(lines)
 
 
-_last_check = {"symbol": None, "price": None, "action": "hold"}
-SKIP_THRESHOLD_PCT = 0.005
+# Remembers enough about the last cycle to tell whether anything has actually
+# changed. 96% of calls were returning "hold" on a shortlist the model had
+# already rejected minutes earlier - paying repeatedly for the same answer.
+_last_context = {"fingerprint": None, "action": "hold", "escalated": set()}
+
+SKIP_THRESHOLD_PCT = 0.02      # a candidate must move 2% to count as news
+ESCALATE_PROFIT_PCT = 8.0      # approaching the +10% target - worth a judgement call
+ESCALATE_LOSS_PCT = -15.0      # approaching the -20% stop - worth asking before it trips
+
+
+def _fingerprint(snapshot):
+    """Identity of a shortlist, insensitive to trivial price drift. Two cycles
+    with the same coins at roughly the same prices produce the same string."""
+    parts = []
+    for sym in sorted(snapshot):
+        price = snapshot[sym].get("price") or 0
+        # Bucket by a percentage step of the price itself, so a 2% move in BTC
+        # (~$1,600) and a 2% move in DOGE (~$0.002) both register as one step.
+        bucket = round(math.log(price) / math.log(1 + SKIP_THRESHOLD_PCT)) if price > 0 else 0
+        parts.append(f"{sym}:{bucket}")
+    return "|".join(parts)
+
+
+def _position_events(status):
+    """Positions that have just crossed a threshold worth thinking about.
+    Crossings are remembered so the same one does not re-trigger every cycle."""
+    events = []
+    for h in (status.get("holdings") or []):
+        pct = h.get("change_pct")
+        if pct is None:
+            continue
+        key = None
+        if pct >= ESCALATE_PROFIT_PCT:
+            key = f"{h['symbol']}:profit"
+            label = f"{h['symbol']} is up {pct:.1f}% - near the target"
+        elif pct <= ESCALATE_LOSS_PCT:
+            key = f"{h['symbol']}:loss"
+            label = f"{h['symbol']} is down {abs(pct):.1f}% - near the stop"
+        if key and key not in _last_context["escalated"]:
+            _last_context["escalated"].add(key)
+            events.append(label)
+        elif not key:
+            # recovered back inside the band - allow it to trigger again later
+            _last_context["escalated"].discard(f"{h['symbol']}:profit")
+            _last_context["escalated"].discard(f"{h['symbol']}:loss")
+    return events
+
+
+def _worth_asking(snapshot, status):
+    """Decide in plain Python whether this cycle justifies a model call.
+    Returns (ask: bool, why: str)."""
+    events = _position_events(status)
+    if events:
+        return True, "; ".join(events)
+
+    fp = _fingerprint(snapshot)
+    if fp != _last_context["fingerprint"]:
+        return True, "the shortlist has changed"
+
+    if _last_context["action"] != "hold":
+        return True, "last cycle ended in a trade, re-checking"
+
+    return False, "same candidates, same prices, nothing held near a threshold"
 
 
 def run_cycle(status):
@@ -252,11 +314,11 @@ def run_cycle(status):
         top_symbol = next(iter(snapshot))
         top_price = snapshot[top_symbol]["price"]
 
-    if (_last_check["action"] == "hold" and top_symbol is not None
-            and _last_check["symbol"] == top_symbol and _last_check["price"] is not None
-            and abs(top_price - _last_check["price"]) / _last_check["price"] < SKIP_THRESHOLD_PCT):
-        log.info(f"Nothing has changed much since last check ({top_symbol} still about ${top_price:,.2f}) - not asking the AI again, saving a call.")
+    ask, why = _worth_asking(snapshot, status)
+    if not ask:
+        log.info(f"No AI call needed - {why}.")
         return
+    log.info(f"Asking the AI because {why}.")
 
     decision = ask_model(status, snapshot)
     log.info(explain_decision(decision, status, snapshot))
@@ -271,9 +333,8 @@ def run_cycle(status):
     except Exception as e:
         log.warning(f"failed to report decision: {e}")
 
-    _last_check["symbol"] = top_symbol
-    _last_check["price"] = top_price
-    _last_check["action"] = decision["action"]
+    _last_context["fingerprint"] = _fingerprint(snapshot)
+    _last_context["action"] = decision["action"]
 
     if decision["action"] == "hold":
         return
