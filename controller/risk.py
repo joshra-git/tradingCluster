@@ -36,7 +36,8 @@ def validate_proposal(agent, proposal, config, todays_pnl, account_day_trade_cou
     #    an identical shortlist reliably converge on the same pick, which quietly
     #    doubles exposure to a single company while looking like two positions.
     #    Only applies to buys - selling out of something is always allowed.
-    if side == "buy" and symbol in claimed_symbols:
+    if (side == "buy" and config.get("enforce_diversification", True)
+            and symbol in claimed_symbols):
         return False, f"another agent already holds {symbol} - keeping the eggs in different baskets", 0
 
     # 3. Max position size as a fraction of this agent's own balance.

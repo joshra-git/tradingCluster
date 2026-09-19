@@ -223,6 +223,44 @@ def record_usage(agent_name, input_tokens, output_tokens, cache_creation_tokens=
         )
 
 
+def ensure_regime_table():
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_regime (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                asset_class TEXT NOT NULL,
+                score INT NOT NULL,
+                regime TEXT NOT NULL,
+                components JSONB,
+                computed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_regime_time ON market_regime(asset_class, computed_at DESC)")
+
+
+def record_regime(asset_class, score, regime, components):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO market_regime (asset_class, score, regime, components) VALUES (%s,%s,%s,%s)",
+            (asset_class, score, regime, psycopg2.extras.Json(components)),
+        )
+
+
+def latest_regime(asset_class):
+    """Most recent score. Returns None if nothing recorded yet, and callers
+    treat that as 'no opinion' rather than blocking trades - a missing regime
+    reading must never silently halt the system."""
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT * FROM market_regime WHERE asset_class = %s
+            ORDER BY computed_at DESC LIMIT 1
+        """, (asset_class,))
+        return cur.fetchone()
+
+
 def ensure_api_costs_table():
     with get_conn() as conn:
         cur = conn.cursor()

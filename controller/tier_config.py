@@ -68,6 +68,14 @@ DEFAULTS = {
     "cost_report_days": 14,
     "usd_aud_fallback_rate": 1.50,        # used only if the FX lookup fails
     "weekly_cost_target_aud": 5.00,       # what you are willing to spend to run this
+    # Market regime brake. Scores the broad market 0-100 and scales how much
+    # agents may deploy. Only ever reduces exposure - never forces a sale, and
+    # existing stop-losses keep running regardless.
+    "regime_filter_enabled": True,
+    "regime_refresh_seconds": 3600,
+    "regime_risk_on_threshold": 70,     # at or above: full size
+    "regime_risk_off_threshold": 40,    # below: no new positions
+    "regime_neutral_multiplier": 0.5,   # between the two: half size
     "daily_call_budget": 1400,
     "reconcile_interval_seconds": 60,
 }

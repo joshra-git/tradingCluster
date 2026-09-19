@@ -10,6 +10,8 @@ import risk
 import alpaca_client
 import k8s_client
 import tier_config
+import market_regime
+import major_coins
 import market_hours
 import safe_universe
 import anthropic_admin
@@ -73,6 +75,15 @@ def propose():
     if asset_class != "crypto":
         body["fractionable"] = alpaca_client.is_fractionable(body["symbol"])
 
+    if cfg.get("regime_filter_enabled", True):
+        row = db.latest_regime(asset_class)
+        if row:
+            mult = market_regime.exposure_multiplier(int(row["score"]), cfg)
+            if mult <= 0:
+                return jsonify({"approved": False,
+                                "reason": f"market regime is {row['regime']} - no new positions"}), 200
+            cfg = {**cfg, "max_position_pct": cfg["max_position_pct"] * mult}
+
     claimed = db.symbols_claimed_by_others(agent["id"])
     approved, reason, sized_qty = risk.validate_proposal(
         agent, body, cfg, todays_pnl, account_day_trades, claimed_symbols=claimed
@@ -133,7 +144,11 @@ def screen():
             asset_class = db.agent_asset_class(agent)
 
     try:
-        if asset_class == "crypto":
+        if asset_class == "crypto" and cfg.get("crypto_universe_mode", "major") == "major":
+            shortlist = major_coins.screen(
+                lookback_days=cfg["trend_window_days"], top_n=cfg["screen_top_n"]
+            )
+        elif asset_class == "crypto":
             shortlist = alpaca_client.screen_crypto(
                 lookback_days=cfg["trend_window_days"], top_n=cfg["screen_top_n"]
             )
@@ -154,7 +169,7 @@ def screen():
         # Drop anything another agent already holds. Without this an agent can
         # pick the same coin every cycle, get rejected by the diversification
         # rule, and burn a model call each time repeating itself.
-        if agent_name:
+        if agent_name and cfg.get("enforce_diversification", True):
             agent_row = db.get_agent(agent_name)
             if agent_row:
                 taken = set(db.symbols_claimed_by_others(agent_row["id"]))
@@ -257,13 +272,29 @@ def heartbeat():
     deployable = spare * cfg["max_position_pct"]
     can_act = deployable >= cfg["min_cash_to_act"]
 
+    # Regime brake. A missing or stale reading yields 1.0 - the filter can
+    # only ever reduce exposure, never silently block everything on a failure.
+    exposure = 1.0
+    regime_label = "unknown"
+    if cfg.get("regime_filter_enabled", True):
+        row = db.latest_regime(asset_class)
+        if row:
+            exposure = market_regime.exposure_multiplier(int(row["score"]), cfg)
+            regime_label = row["regime"]
+    if exposure <= 0:
+        can_act = False
+
     think, interval, why = market_hours.should_think(asset_class, session, can_act, cfg)
+    if exposure <= 0 and not think:
+        why = f"market regime is {regime_label} - not opening new positions"
 
     return jsonify({
         "status": agent["status"],
         "current_balance": float(agent["current_balance"]),
         "holdings": holdings,
         "can_act": can_act,
+        "regime": regime_label,
+        "exposure_multiplier": exposure,
         "should_think": think,
         "idle_reason": why,
         "deployable": round(deployable, 2),
@@ -618,6 +649,22 @@ def sync_api_costs():
                  f"(${total * rate:.2f} AUD at {rate:.4f})")
 
 
+def refresh_regime():
+    """Scores the broad market so agents can size down (or stop) when the tide
+    turns. Pure arithmetic on bars we already fetch - no model calls, no extra
+    API keys. Failure here is non-fatal: no reading means no opinion, and the
+    system trades as it would have anyway."""
+    cfg = tier_config.load()
+    for ac in tier_config.enabled_asset_classes(cfg):
+        try:
+            r = market_regime.compute(ac)
+            db.record_regime(ac, r["score"], r["regime"], r["components"])
+            log.info(f"regime [{ac}]: {r['score']}/100 = {r['regime']} "
+                     f"(exposure {market_regime.exposure_multiplier(r['score'], cfg):.0%})")
+        except Exception as e:
+            log.error(f"regime scoring failed for {ac}: {e}")
+
+
 def run_discovery_scan():
     """Runs on its own schedule, independent of agent count or agent cycle timing -
     so having 2 agents (or 20) doesn't multiply how often the real market gets scanned."""
@@ -639,6 +686,7 @@ if __name__ == "__main__":
     db.ensure_market_scans_table()
     db.ensure_equity_snapshots_table()
     db.ensure_api_costs_table()
+    db.ensure_regime_table()
     db.ensure_decisions_table()
     db.ensure_shortlist_cache_table()
     bootstrap()
@@ -647,6 +695,8 @@ if __name__ == "__main__":
                        next_run_time=datetime.now())
     scheduler.add_job(reconcile, "interval", seconds=cfg["reconcile_interval_seconds"])
     scheduler.add_job(enforce_exits, "interval", seconds=cfg["exit_check_interval_seconds"],
+                       next_run_time=datetime.now())
+    scheduler.add_job(refresh_regime, "interval", seconds=cfg["regime_refresh_seconds"],
                        next_run_time=datetime.now())
     scheduler.add_job(sync_api_costs, "interval", seconds=cfg["cost_sync_interval_seconds"],
                        next_run_time=datetime.now())
