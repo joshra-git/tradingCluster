@@ -66,8 +66,12 @@ were compromised, it could not touch money or data directly.
 2. **Persistence filter** — only symbols appearing in ≥2 of the last 3 scans
    survive. Kills single-scan noise.
 3. **Shortlist** — survivors ranked by 5-day momentum, top 5 go forward.
-   *Crypto skips steps 1–2 entirely*: there are only a few dozen tradable pairs,
-   so the whole universe is ranked directly.
+   *Crypto skips steps 1–2 entirely*. With `crypto_universe_mode: major`
+   (the default) it ranks a fixed list of twelve established coins in
+   `controller/major_coins.py` — BTC, ETH, SOL, XRP and similar. This exists
+   because Alpaca's movers screener returns whatever spiked hardest today,
+   which is how PEPE and HYPE kept reaching the shortlist. Set it to anything
+   else to fall back to the movers path.
 4. **Judgement** — the agent sends the shortlist plus its own holdings to
    Claude, which returns buy/sell/hold with reasoning and a mandatory stop-loss.
 5. **Risk layer** (`controller/risk.py`) — deterministic vetoes. Claude
@@ -115,6 +119,45 @@ involve Claude — a stop-loss that depends on an API call succeeding is not a
 stop-loss. Claude can still choose to sell earlier for its own reasons.
 
 ---
+
+## Market regime filter
+
+`controller/market_regime.py` scores the broad market 0-100 every hour and
+scales how much agents may deploy. Pure arithmetic on bars already fetched —
+no model calls, no extra API keys, no external services.
+
+Four components, 25 points each:
+1. Anchor (BTC/USD for crypto, SPY for stocks) vs its 200-day average
+2. Anchor vs its 50-day average
+3. Breadth — how many coins/stocks in the universe are above their own 50-day
+   average. An anchor holding up while everything else falls is a narrow,
+   fragile market, and the anchor alone cannot show that.
+4. 20-day direction of the anchor
+
+The scoring of "above vs below an average" is deliberately asymmetric: below a
+**rising** average scores 8 (a pullback in an uptrend), above a **falling** one
+scores 12 (a bounce in a downtrend). The second is the more dangerous place to
+be buying, so it is not rewarded as if it were strength.
+
+| Score | Regime | Effect |
+| --- | --- | --- |
+| 70-100 | risk-on | full position sizes |
+| 40-69 | neutral | half position sizes |
+| 0-39 | risk-off | no new positions |
+
+Risk-off blocks **new entries only**. Existing holdings are untouched and their
+stop-losses keep running — the filter can never force a sale, and a missing or
+failed regime reading yields a multiplier of 1.0 rather than silently halting
+everything. Failing open is correct here: the brake exists to reduce exposure
+in bad conditions, not to stop trading whenever a data fetch hiccups.
+
+Thresholds live in the ConfigMap (`regime_risk_on_threshold`,
+`regime_risk_off_threshold`, `regime_neutral_multiplier`) and the whole thing
+switches off with `regime_filter_enabled: false`. No override mechanism by
+design — a brake you can disable whenever it is inconvenient is not a brake.
+
+**Not backtested.** The components and thresholds are reasoned choices, not
+validated ones. A trigger firing does not make it correct.
 
 ## Cost control
 
@@ -188,6 +231,7 @@ stale number is never mistaken for a live one.
 | `market_scans` | discovery results (stocks only) |
 | `api_costs` | real billed USD per day from the Admin API |
 | `fx_rates` | USD→AUD rate, with a flag for whether it is live or fallback |
+| `market_regime` | hourly regime score, label and component breakdown |
 
 Tables are created/migrated at Controller startup via `ensure_*_table()`
 functions using `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`.
@@ -250,17 +294,21 @@ assume a submitted order is a completed one.
 
 ## Current state
 
-- Trading **crypto** (`crypto_enabled: true`, `stocks_enabled: false`).
-  Flip both true for a 50/50 split across agents — the toggle works, agents are
-  assigned round-robin at bootstrap.
-- Using **Claude** (`claude-sonnet-4-6`). Briefly used Gemini; its free tier for
-  newer Flash models is **20 requests/day**, not 1500 — unusable here.
-- 2 agents, $250 each, spawn at $500.
-- Main dashboard is dark-themed. New agent detail page (`/agent/<name>`) uses
-  the **Modernist** design system — light ground, Archivo, red accent, zero
-  radius. The two do not match visually; that is unresolved.
-
----
+- Trading **crypto** from a fixed list of twelve major coins. Flip both
+  `stocks_enabled` and `crypto_enabled` true for a 50/50 split across agents.
+- Using **Claude** (`claude-sonnet-4-6`). Gemini was tried and abandoned: its
+  free tier for newer Flash models is **20 requests/day**, not 1500.
+- 2 agents, ~$499 each, spawn at double. `max_position_pct: 0.5`.
+- Crypto exits: fixed **+10% target, -20% stop** (`crypto_trailing_stop: false`).
+  Stocks keep the trailing stop. The wide crypto stop is deliberate — the intent
+  is to hold through normal swings, so expect to see red numbers without the
+  system acting.
+- `enforce_diversification: false` — agents may hold the same coin. With only
+  twelve majors, blocking duplicates left the second agent with nothing to pick.
+- Regime filter live, currently scoring ~93/100 (risk-on), so it applies no
+  brake. It only bites if conditions deteriorate.
+- Main dashboard is dark-themed; the agent detail page (`/agent/<name>`) uses
+  the light **Modernist** design system. They do not match visually.
 
 ## Known gaps / next work
 
@@ -272,9 +320,9 @@ Roughly in priority order.
    This has bitten us more than once.
 2. **`min_price_floor` only applies to the movers list**, not most-actives, so
    sub-$5 stocks still reach the shortlist (FTFT at $3.29 did).
-3. **Duplicate quote pairs in crypto shortlists.** `UNI/USD`, `UNI/USDC`,
-   `UNI/USDT` are the same coin and crowd out real alternatives. Filter to
-   `/USD` only.
+3. **CLAUDE.md and README drift.** Several features were added after the
+   original write-up. Check `controller/` for modules not mentioned here
+   before assuming the docs are complete.
 4. **Stale log wording.** Crypto orders log "will go through when the market
    next opens" — crypto never closes. Also "quiet." reads oddly; should be
    "outside your active hours".
@@ -285,7 +333,16 @@ Roughly in priority order.
 7. **Correlation is only per-symbol.** Two agents can hold INTC and AMD — both
    semiconductors — which is one bet wearing two hats.
 8. **No market-holiday awareness.** Thanksgiving looks like a normal weekday.
-9. **Time-of-day analysis is possible but unbuilt.** All the data is being
+9. **No backtester.** Everything in this system is a hypothesis. Alpaca gives
+   7+ years of bars and the scanning/ranking/exit logic is all deterministic,
+   so a replay would cost almost nothing in model calls and would answer in an
+   afternoon what live running takes months to reveal. This is the single
+   highest-value unbuilt thing.
+10. **Two identical agents.** Both run the same prompt against the same
+   shortlist and reliably reach the same conclusion. They are capital buckets,
+   not competing strategies. Genuine diversity would mean giving them
+   *different* strategies, not identical ones and hoping they diverge.
+11. **Time-of-day analysis is possible but unbuilt.** All the data is being
    collected; nothing queries it yet. Crypto does not write to `market_scans`
    at all, which would need fixing first.
 

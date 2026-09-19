@@ -61,6 +61,32 @@ you have to babysit:
 This is the one piece of logic explicitly kept fixed by request — the risk
 rules above it can change, but this scaling mechanism is the backbone.
 
+## The market regime brake
+
+A momentum strategy buys things going up. In a broad downtrend most things go
+down, so it either finds nothing or buys weak bounces that fail.
+
+Every hour the Controller scores the whole market out of 100 — is Bitcoin (or
+the S&P) above its long-term average, is that average rising, how many other
+coins are participating, which way has it moved recently. Four components,
+25 points each.
+
+- **70 or above** — normal trading
+- **40 to 69** — half-sized positions
+- **Below 40** — no new buys at all
+
+It only ever blocks *new* purchases. Anything already held stays, and its
+stop-loss keeps running. If the scoring itself fails, it assumes normal
+conditions rather than halting — a brake that jams on whenever a data fetch
+hiccups is worse than no brake.
+
+This costs nothing to run: it is arithmetic on price data already being
+fetched, with no AI involved.
+
+Worth being honest about what it does: it should mean **fewer bad weeks**, not
+more good ones. Trend filters cut losses in poor conditions and cost you some
+upside by lagging recoveries. It has not been backtested.
+
 ## Trading only when it's worth paying for
 
 Claude API calls cost real money per call, so the system doesn't think at a
@@ -97,14 +123,17 @@ as it happens:
 
 ## What it's watching
 
-Currently two symbols, deliberately simple:
+**For crypto:** a fixed list of twelve established coins — Bitcoin, Ethereum,
+Solana, XRP, Cardano, Chainlink and similar. Deliberately boring. The
+alternative is asking the exchange "what moved most today", which returns
+whatever spiked hardest — usually memecoins about to give it all back.
 
-- **SPY** (SPDR S&P 500 ETF Trust) — the 500 largest US companies.
-- **QQQ** (Invesco QQQ Trust) — the Nasdaq-100, mostly large tech/growth
-  names.
+**For stocks:** around eighty large companies (Apple, JPMorgan, Costco…) plus
+broad index funds like SPY and VOO, filtered to skip anything that has already
+run more than 25% or that swings violently day to day.
 
-Both are index funds, not single companies — betting on either is betting on
-a basket, not a stock pick.
+Either way the principle is the same: buying things that have already spiked
+means buying from people sitting on profits who are looking to take them.
 
 ## The dashboard
 
