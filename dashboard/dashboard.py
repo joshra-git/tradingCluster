@@ -50,6 +50,7 @@ TEMPLATE = """
     --rose: #fb7185;
     --sans: 'Inter', -apple-system, sans-serif;
     --mono: 'JetBrains Mono', ui-monospace, monospace;
+    --shadow-card: 0 1px 2px rgba(0,0,0,0.24), 0 8px 24px -12px rgba(0,0,0,0.5);
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -62,6 +63,8 @@ TEMPLATE = """
     display: flex;
     min-height: 100vh;
   }
+  ::selection { background: rgba(45,212,191,0.28); color: var(--text); }
+  a { color: var(--teal); }
 
   aside {
     width: 300px;
@@ -102,28 +105,44 @@ TEMPLATE = """
   .rail-stat .value.hero { font-size: 1.4rem; color: var(--teal); }
   .rail-note { color: var(--text-faint); font-size: 0.68rem; margin-top: 0.6rem; line-height: 1.5; }
 
-  main { flex: 1; padding: 2.25rem 3rem 4rem; min-width: 0; }
-  section { margin-bottom: 2.5rem; }
-  section h2 { font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin: 0 0 0.9rem; }
+  main { flex: 1; padding: 2.25rem 3rem 4rem; min-width: 0; max-width: 1320px; }
+  section { margin-bottom: 2.75rem; }
+  section h2 {
+    font-size: 0.72rem; font-weight: 600; color: var(--text-faint); margin: 0 0 1rem;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
 
   .chips { display: flex; gap: 0.75rem; flex-wrap: wrap; }
-  .chip { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--teal); border-radius: 8px; padding: 0.7rem 1rem; min-width: 220px; }
+  .chip {
+    background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--teal);
+    border-radius: 10px; padding: 0.75rem 1.05rem; min-width: 220px; box-shadow: var(--shadow-card);
+    transition: border-color 0.15s ease;
+  }
   .chip .sym { font-family: var(--mono); font-weight: 600; font-size: 0.9rem; }
-  .chip .name { font-size: 0.8rem; color: var(--text); margin-top: 0.15rem; }
-  .chip .desc { font-size: 0.74rem; color: var(--text-faint); margin-top: 0.2rem; }
+  .chip .name { font-size: 0.8rem; color: var(--text); margin-top: 0.2rem; }
+  .chip .desc { font-size: 0.74rem; color: var(--text-faint); margin-top: 0.25rem; }
 
-  .agent-cards { display: flex; gap: 1rem; flex-wrap: wrap; }
-  .agent-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.1rem 1.4rem; min-width: 230px; flex: 1; position: relative; overflow: hidden; }
+  .agent-cards { display: flex; gap: 1.1rem; flex-wrap: wrap; }
+  .agent-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.25rem 1.5rem; min-width: 250px; flex: 1; position: relative; overflow: hidden;
+    box-shadow: var(--shadow-card); transition: border-color 0.15s ease, transform 0.15s ease;
+  }
   .agent-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--text-faint); }
   .agent-card.active::before { background: var(--green); }
   .agent-card.culled::before { background: var(--rose); }
-  .agent-card .name { font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.4rem; }
-  .agent-card .balance { font-family: var(--mono); font-size: 1.6rem; font-weight: 500; }
-  .agent-card .tier { font-family: var(--mono); font-size: 0.74rem; color: var(--text-faint); margin-top: 0.35rem; }
-  .agent-card .meta { font-size: 0.72rem; color: var(--text-faint); margin-top: 0.6rem; }
-  .holdings { margin-top: 0.85rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
-  .holdings-label { font-size: 0.7rem; color: var(--text-faint); margin-bottom: 0.45rem; }
-  .holding-row { display: flex; align-items: baseline; gap: 0.5rem; font-family: var(--mono); font-size: 0.76rem; padding: 0.15rem 0; }
+  .agent-card:hover { border-color: var(--text-faint); }
+  .agent-card .name { font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.45rem; font-weight: 500; }
+  .agent-card .name a { color: var(--teal); text-decoration: none; }
+  .agent-card .name a:hover { text-decoration: underline; }
+  .agent-card .balance { font-family: var(--mono); font-size: 1.7rem; font-weight: 500; letter-spacing: -0.01em; }
+  .agent-card .tier { font-family: var(--mono); font-size: 0.74rem; color: var(--text-faint); margin-top: 0.4rem; }
+  .agent-card .meta { font-size: 0.72rem; color: var(--text-faint); margin-top: 0.65rem; }
+  .spark { display: block; margin-top: 0.7rem; }
+  .spark-empty { height: 32px; margin-top: 0.7rem; }
+  .holdings { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
+  .holdings-label { font-size: 0.68rem; color: var(--text-faint); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .holding-row { display: flex; align-items: baseline; gap: 0.5rem; font-family: var(--mono); font-size: 0.76rem; padding: 0.2rem 0; }
   .h-sym { font-weight: 600; min-width: 74px; }
   .h-qty { color: var(--text-faint); flex: 1; }
   .h-chg { font-weight: 500; }
@@ -131,28 +150,35 @@ TEMPLATE = """
   .h-chg.down { color: var(--rose); }
   .h-chg.pending { color: var(--text-faint); font-size: 0.7rem; }
   .h-val { min-width: 58px; text-align: right; }
-  .holdings-total { font-family: var(--mono); font-size: 0.72rem; color: var(--text-dim); margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px dashed var(--border); }
+  .holdings-total { font-family: var(--mono); font-size: 0.72rem; color: var(--text-dim); margin-top: 0.55rem; padding-top: 0.45rem; border-top: 1px dashed var(--border); }
 
-  .feed { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface); }
-  .feed-row { display: flex; gap: 1rem; padding: 0.85rem 1.1rem; border-bottom: 1px solid var(--border); border-left: 3px solid var(--text-faint); }
+  .feed { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); box-shadow: var(--shadow-card); }
+  .feed-row { display: flex; gap: 1rem; padding: 0.9rem 1.2rem; border-bottom: 1px solid var(--border); border-left: 3px solid var(--text-faint); transition: background 0.15s ease; }
   .feed-row:last-child { border-bottom: none; }
+  .feed-row:hover { background: var(--surface-2); }
   .feed-row.buy { border-left-color: var(--green); }
   .feed-row.sell { border-left-color: var(--rose); }
   .feed-row.hold { border-left-color: var(--text-faint); }
   .feed-time { font-family: var(--mono); color: var(--text-faint); font-size: 0.76rem; width: 68px; flex-shrink: 0; padding-top: 0.1rem; }
   .feed-main { flex: 1; min-width: 0; }
-  .feed-line1 { margin-bottom: 0.25rem; }
+  .feed-line1 { margin-bottom: 0.3rem; }
   .feed-symbol { font-family: var(--mono); font-weight: 600; margin-right: 0.55rem; }
   .feed-symbol-name { font-size: 0.74rem; color: var(--text-faint); margin-right: 0.6rem; }
-  .feed-side { font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; padding: 0.05rem 0.4rem; border-radius: 4px; margin-right: 0.6rem; }
+  .feed-side { font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; padding: 0.1rem 0.45rem; border-radius: 4px; margin-right: 0.6rem; letter-spacing: 0.02em; }
   .feed-side.buy { background: rgba(74,222,128,0.12); color: var(--green); }
   .feed-side.sell { background: rgba(251,113,133,0.12); color: var(--rose); }
   .feed-side.hold { background: rgba(137,147,168,0.12); color: var(--text-dim); }
   .feed-agent { font-size: 0.74rem; color: var(--text-dim); }
   .feed-reasoning { color: var(--text-dim); font-size: 0.82rem; }
-  .feed-status { font-size: 0.72rem; color: var(--text-faint); margin-top: 0.3rem; }
+  .feed-status { font-size: 0.72rem; color: var(--text-faint); margin-top: 0.35rem; }
 
-  .empty { color: var(--text-faint); padding: 2rem; text-align: center; font-family: var(--mono); font-size: 0.85rem; }
+  table { box-shadow: var(--shadow-card); }
+  tr:hover td { background: var(--surface-2); }
+
+  .empty {
+    color: var(--text-faint); padding: 2.25rem; text-align: center; font-family: var(--mono);
+    font-size: 0.85rem; background: var(--surface); border: 1px dashed var(--border); border-radius: 12px;
+  }
 </style>
 </head>
 <body>
@@ -244,6 +270,14 @@ TEMPLATE = """
         <div class="name"><a href="/agent/{{ a.name }}" style="color:var(--teal);text-decoration:none">{{ a.name }} &rarr;</a></div>
         <div class="balance">${{ "%.2f"|format(a.current_balance) }}</div>
         <div class="tier">cash available &middot; tier ${{ "%.0f"|format(a.min_capital) }} &rarr; ${{ "%.0f"|format(a.max_capital) }}</div>
+        {% set spark = sparklines.get(a.name) %}
+        {% if spark %}
+        <svg class="spark" viewBox="0 0 240 32" preserveAspectRatio="none" width="100%" height="32">
+          <polyline points="{{ spark.points }}" fill="none" stroke="{{ 'var(--green)' if spark.up else 'var(--rose)' }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        </svg>
+        {% else %}
+        <div class="spark-empty"></div>
+        {% endif %}
         {% set held = holdings_by_agent.get(a.name, []) %}
         {% if held %}
         <div class="holdings">
@@ -526,6 +560,33 @@ def dashboard():
     active_agents = [a for a in agents if a["status"] == "active"]
     total_balance = sum(float(a["current_balance"]) for a in active_agents) + float(pool)
 
+    sparklines = {}
+    try:
+        eq_rows = query("""
+            SELECT agent_id, total, taken_at FROM equity_snapshots
+            WHERE agent_id = ANY(%s)
+            ORDER BY taken_at DESC
+        """, ([a["id"] for a in active_agents],))
+    except Exception:
+        eq_rows = []
+    by_agent_id = {}
+    for r in eq_rows:
+        by_agent_id.setdefault(r["agent_id"], [])
+        if len(by_agent_id[r["agent_id"]]) < 30:
+            by_agent_id[r["agent_id"]].append(float(r["total"]))
+    for a in active_agents:
+        vals = by_agent_id.get(a["id"], [])[::-1]
+        if len(vals) < 2:
+            continue
+        lo, hi = min(vals), max(vals)
+        span = (hi - lo) or 1.0
+        pts = []
+        for i, v in enumerate(vals):
+            x = i / (len(vals) - 1) * 240
+            y = 28 - ((v - lo) / span * 24)
+            pts.append(f"{x:.1f},{y:.1f}")
+        sparklines[a["name"]] = {"points": " ".join(pts), "up": vals[-1] >= vals[0]}
+
     return render_template_string(
         TEMPLATE, agents=agents, trades=trades, agent_count=len(active_agents),
         total_balance=total_balance, pool_balance=float(pool), trades_today=trades_today,
@@ -533,53 +594,43 @@ def dashboard():
         watching=watching, thinking=thinking, holdings_by_agent=holdings_by_agent,
         spend_aud_week=spend_aud_week, spend_aud_today=spend_aud_today, usage_days=usage_days,
         spend_usd_week=spend_usd_week, cost_actual=cost_actual,
-        fx_rate=fx_rate, fx_live=fx_live,
+        fx_rate=fx_rate, fx_live=fx_live, sparklines=sparklines,
     )
 
 
 
 # ---------------------------------------------------------------------------
-# Agent detail page. Implements the "Broadsheet" option from the Modernist
-# design system: light ground, Archivo, zero radius, 2px rules, one red accent.
-# The system's tokens are inlined below because this dashboard serves no static
-# files - it is a single Flask module by design.
+# Agent detail page. Shares the dark theme and token names from the main
+# dashboard so both pages read as one product, in a spec-rail + main layout.
+# The tokens are inlined below because this dashboard serves no static files
+# - it is a single Flask module by design.
 # ---------------------------------------------------------------------------
 
-MODERNIST_TOKENS = """
+DETAIL_TOKENS = """
 :root{
-  --color-bg:#f3f2f2; --color-surface:#eae9e9; --color-text:#201e1d;
-  --color-accent:#ec3013; --color-divider:color-mix(in srgb,#201e1d 40%,transparent);
-  --color-neutral-100:#f8f4f4; --color-accent-100:#fff2ef; --color-accent-200:#ffe0d9;
-  --color-accent-700:#ae1800; --color-accent-800:#7c1405;
-  --font-heading:"Archivo",system-ui,sans-serif; --font-body:"Archivo",system-ui,sans-serif;
-  --font-heading-weight:800;
-  --space-2:8px; --space-3:12px; --space-4:16px;
-  --radius-md:0px;
+  --bg:#0a0e16; --rail:#0d1220; --surface:#10151f; --surface-2:#171e2c; --border:#1c2334;
+  --text:#e4e8f1; --text-dim:#8993a8; --text-faint:#4a5266;
+  --teal:#2dd4bf; --amber:#f0a94e; --green:#4ade80; --rose:#fb7185;
+  --sans:'Inter',-apple-system,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
 }
 *,*::before,*::after{box-sizing:border-box}
-body{margin:0;background:var(--color-bg);color:var(--color-text);
-     font-family:var(--font-body);font-size:15px;line-height:1.55}
-h1,h2,h3{font-family:var(--font-heading);font-weight:var(--font-heading-weight);
-         line-height:1.12;letter-spacing:-.015em;margin:0}
-a{color:var(--color-accent);text-decoration:none}
-a:hover{color:var(--color-accent-700)}
-:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px}
-::selection{background:color-mix(in srgb,var(--color-accent) 30%,transparent)}
-.num{font-variant-numeric:tabular-nums;letter-spacing:-.01em}
-.kick{font:800 10px var(--font-heading);letter-spacing:.12em;text-transform:uppercase;
-      color:color-mix(in srgb,var(--color-text) 55%,transparent)}
-.r2{height:2px;background:var(--color-divider)}
-.tag{display:inline-flex;align-items:center;font-size:11px;letter-spacing:.02em;
-     padding:3px 10px;border-radius:0}
-.tag-accent{background:var(--color-accent-100);color:var(--color-accent-800)}
-.tag-outline{border:1px solid var(--color-accent);color:var(--color-accent)}
-.spec-row{display:flex;justify-content:space-between;padding:9px 0;font-size:12.5px;
-          border-bottom:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)}
-.spec-row span:first-child{color:color-mix(in srgb,var(--color-text) 55%,transparent)}
-.spec-row span:last-child{font-weight:700}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.55}
+a{color:var(--teal);text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+::selection{background:rgba(45,212,191,0.28)}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.kick{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint)}
+.r2{height:1px;background:var(--border)}
+.tag{display:inline-flex;align-items:center;font-family:var(--mono);font-size:11px;letter-spacing:.02em;padding:3px 10px;border-radius:5px}
+.tag-accent{background:rgba(74,222,128,0.12);color:var(--green)}
+.tag-outline{border:1px solid var(--border);color:var(--text-dim)}
+.spec-row{display:flex;justify-content:space-between;padding:9px 0;font-size:12.5px;border-bottom:1px solid var(--border)}
+.spec-row span:first-child{color:var(--text-faint)}
+.spec-row span:last-child{font-weight:600;font-family:var(--mono)}
 .log-row{display:grid;grid-template-columns:72px 8px 84px minmax(0,1fr) 116px;gap:14px;
-         align-items:baseline;padding:11px 0;
-         border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)}
+         align-items:baseline;padding:11px 0;border-top:1px solid var(--border)}
+.log-row:hover{background:var(--surface-2)}
 """
 
 AGENT_DETAIL_TEMPLATE = """
@@ -590,19 +641,19 @@ AGENT_DETAIL_TEMPLATE = """
 <meta http-equiv="refresh" content="30">
 <title>{{ agent.name }} — Trading desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>__TOKENS__</style>
 </head>
 <body>
 <div style="display:grid;grid-template-columns:288px minmax(0,1fr);min-height:100vh">
 
   <!-- spec rail -->
-  <div style="border-right:2px solid var(--color-divider);padding:26px 24px 30px;background:var(--color-neutral-100)">
-    <div style="font:800 14px var(--font-heading);margin-bottom:26px">
-      <a href="/" style="color:var(--color-text)">&larr; Trading desk</a>
+  <div style="border-right:1px solid var(--border);padding:26px 24px 30px;background:var(--rail)">
+    <div style="font-weight:600;font-size:14px;margin-bottom:26px">
+      <a href="/" style="color:var(--text-dim)">&larr; Trading desk</a>
     </div>
     <div class="kick" style="margin-bottom:8px">Agent</div>
-    <div style="font:800 30px/1.05 var(--font-heading);letter-spacing:-.02em;margin-bottom:10px">{{ agent.name }}</div>
+    <div style="font-weight:600;font-size:26px;line-height:1.15;letter-spacing:-.01em;margin-bottom:10px">{{ agent.name }}</div>
     <div style="display:flex;gap:8px;margin-bottom:22px">
       <span class="tag tag-accent">{{ agent.status }}</span>
       <span class="tag tag-outline">{{ asset_class }}</span>
@@ -612,10 +663,10 @@ AGENT_DETAIL_TEMPLATE = """
     <div class="kick" style="margin-bottom:12px">Capital tier</div>
     <div style="display:flex;align-items:flex-end;gap:5px;height:56px;margin-bottom:8px">
       {% for step in tier_steps %}
-      <div style="flex:1;height:{{ step.height }}%;background:{{ 'var(--color-accent)' if step.current else 'color-mix(in srgb,var(--color-text) 20%,transparent)' }}"></div>
+      <div style="flex:1;height:{{ step.height }}%;border-radius:2px;background:{{ 'var(--teal)' if step.current else 'var(--border)' }}"></div>
       {% endfor %}
     </div>
-    <div class="num" style="font-size:11.5px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">
+    <div class="num" style="font-size:11.5px;color:var(--text-faint)">
       ${{ "%.0f"|format(agent.min_capital) }} &rarr; ${{ "%.0f"|format(agent.max_capital) }}
       &nbsp;·&nbsp; {{ tier_label }}
     </div>
@@ -623,28 +674,28 @@ AGENT_DETAIL_TEMPLATE = """
     <div class="r2" style="margin:18px 0"></div>
     <div class="spec-row"><span>Cash</span><span class="num">${{ "%.2f"|format(cash) }}</span></div>
     <div class="spec-row"><span>Invested</span><span class="num">${{ "%.2f"|format(invested) }}</span></div>
-    <div class="spec-row"><span>Open P&amp;L</span><span class="num" {% if open_pl < 0 %}style="color:var(--color-accent-700)"{% endif %}>{{ "+" if open_pl >= 0 else "−" }}${{ "%.2f"|format(open_pl|abs) }}</span></div>
+    <div class="spec-row"><span>Open P&amp;L</span><span class="num" style="color:{{ 'var(--green)' if open_pl >= 0 else 'var(--rose)' }}">{{ "+" if open_pl >= 0 else "−" }}${{ "%.2f"|format(open_pl|abs) }}</span></div>
     <div class="spec-row" style="border-bottom:none"><span>Parent</span><span class="num">{{ agent.parent_name or "—" }}</span></div>
 
     <div class="r2" style="margin:18px 0"></div>
     <div class="kick" style="margin-bottom:10px">Burn · model calls</div>
     <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:8px">
-      <span class="num" style="font:800 22px var(--font-heading)">{{ calls_today }}</span>
-      <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">calls today, all agents</span>
+      <span class="num" style="font-weight:600;font-size:22px;color:var(--teal)">{{ calls_today }}</span>
+      <span class="num" style="font-size:12px;color:var(--text-faint)">calls today, all agents</span>
     </div>
 
     <div class="r2" style="margin:18px 0"></div>
     <div class="kick" style="margin-bottom:10px">Sessions</div>
     <div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0">
-      <span style="font-size:12px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">New York</span>
-      <span class="num" id="nyc" style="font-weight:700;font-size:15px">--:--:--</span>
+      <span style="font-size:12px;color:var(--text-faint)">New York</span>
+      <span class="num" id="nyc" style="font-weight:600;font-size:15px">--:--:--</span>
     </div>
-    <div id="nyc-state" style="font:800 10.5px var(--font-heading);letter-spacing:.1em;color:var(--color-accent-700);margin-bottom:12px"></div>
+    <div id="nyc-state" style="font-weight:600;font-size:10.5px;letter-spacing:.1em;color:var(--amber);margin-bottom:12px"></div>
     <div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0">
-      <span style="font-size:12px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">Brisbane</span>
-      <span class="num" id="bne" style="font-weight:700;font-size:15px">--:--:--</span>
+      <span style="font-size:12px;color:var(--text-faint)">Brisbane</span>
+      <span class="num" id="bne" style="font-weight:600;font-size:15px">--:--:--</span>
     </div>
-    <div id="bne-date" style="font-size:11.5px;color:color-mix(in srgb,var(--color-text) 50%,transparent)"></div>
+    <div id="bne-date" style="font-size:11.5px;color:var(--text-faint)"></div>
   </div>
 
   <!-- main -->
@@ -652,31 +703,31 @@ AGENT_DETAIL_TEMPLATE = """
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:30px 32px 24px">
       <div>
         <div class="kick" style="margin-bottom:12px">Account value</div>
-        <div class="num" style="font:900 76px/.9 var(--font-heading);letter-spacing:-.035em">${{ "%.2f"|format(total_value) }}</div>
-        <div class="num" style="font-size:15px;margin-top:12px;color:color-mix(in srgb,var(--color-text) 65%,transparent)">
+        <div class="num" style="font-weight:600;font-size:64px;line-height:.95;letter-spacing:-.02em">${{ "%.2f"|format(total_value) }}</div>
+        <div class="num" style="font-size:15px;margin-top:12px;color:{{ 'var(--green)' if since_spawn >= 0 else 'var(--rose)' }}">
           {{ "+" if since_spawn >= 0 else "−" }}${{ "%.2f"|format(since_spawn|abs) }}
           &nbsp;/&nbsp; {{ "+" if since_spawn_pct >= 0 else "−" }}{{ "%.1f"|format(since_spawn_pct|abs) }}% since spawn
-          &nbsp;·&nbsp; running {{ running_for }}
+          <span style="color:var(--text-faint)">&nbsp;·&nbsp; running {{ running_for }}</span>
         </div>
       </div>
       <div style="text-align:left;min-width:150px">
         <div class="kick" style="margin-bottom:10px">Decisions</div>
-        <div class="num" style="font:800 20px var(--font-heading)">{{ decision_count }} total</div>
-        <div class="num" style="font:800 20px var(--font-heading);margin-top:2px">{{ trade_count }} orders</div>
+        <div class="num" style="font-weight:600;font-size:20px">{{ decision_count }} total</div>
+        <div class="num" style="font-weight:600;font-size:20px;margin-top:2px">{{ trade_count }} orders</div>
       </div>
     </div>
 
     {% if latest %}
-    <div style="background:var(--color-accent);color:var(--color-bg);padding:24px 32px 26px">
-      <div style="font:800 10px var(--font-heading);letter-spacing:.14em;margin-bottom:12px;opacity:.85">
+    <div style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:24px 32px 26px;border-left:3px solid {{ 'var(--green)' if latest.action == 'buy' else ('var(--rose)' if latest.action == 'sell' else 'var(--text-faint)') }}">
+      <div class="kick" style="margin-bottom:12px">
         LATEST DECISION · {{ latest.created_at.strftime("%H:%M:%S") }}
       </div>
       <div style="display:flex;align-items:baseline;gap:16px;margin-bottom:12px">
-        <span class="num" style="font:900 44px/1 var(--font-heading);letter-spacing:-.03em">
+        <span class="num" style="font-weight:600;font-size:36px;letter-spacing:-.02em;color:{{ 'var(--green)' if latest.action == 'buy' else ('var(--rose)' if latest.action == 'sell' else 'var(--text)') }}">
           {{ latest.action|upper }}{{ " " + latest.symbol if latest.symbol else "" }}
         </span>
       </div>
-      <p style="margin:0;max-width:74ch;font-size:15px;line-height:1.5;text-wrap:pretty">{{ latest.reasoning }}</p>
+      <p style="margin:0;max-width:74ch;font-size:15px;line-height:1.5;color:var(--text-dim);text-wrap:pretty">{{ latest.reasoning }}</p>
     </div>
     {% endif %}
 
@@ -684,19 +735,19 @@ AGENT_DETAIL_TEMPLATE = """
       <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
         <div class="kick">Value over time · {{ history|length }} snapshots</div>
         {% if history|length > 1 %}
-        <div class="num" style="font-size:11.5px;color:color-mix(in srgb,var(--color-text) 55%,transparent)">
+        <div class="num" style="font-size:11.5px;color:var(--text-faint)">
           low ${{ "%.2f"|format(hist_low) }} &nbsp;·&nbsp; high ${{ "%.2f"|format(hist_high) }}
         </div>
         {% endif %}
       </div>
       {% if history|length > 1 %}
-      <svg viewBox="0 0 900 200" preserveAspectRatio="none" style="width:100%;height:200px;display:block">
-        <polygon points="{{ spark_fill }}" fill="var(--color-accent-200)"></polygon>
-        <polyline points="{{ spark_line }}" fill="none" stroke="var(--color-accent)" stroke-width="3"></polyline>
-        <line x1="0" y1="190" x2="900" y2="190" stroke="var(--color-text)" stroke-width="2"></line>
+      <svg viewBox="0 0 900 200" preserveAspectRatio="none" style="width:100%;height:200px;display:block;background:var(--surface);border:1px solid var(--border);border-radius:10px">
+        <polygon points="{{ spark_fill }}" fill="rgba(45,212,191,0.14)"></polygon>
+        <polyline points="{{ spark_line }}" fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        <line x1="0" y1="190" x2="900" y2="190" stroke="var(--border)" stroke-width="1"></line>
       </svg>
       {% else %}
-      <div class="num" style="padding:36px 0;font-size:13px;color:color-mix(in srgb,var(--color-text) 45%,transparent)">
+      <div class="num" style="padding:36px 0;font-size:13px;color:var(--text-faint);text-align:center;background:var(--surface);border:1px dashed var(--border);border-radius:10px">
         Not enough history yet — a snapshot is taken every minute.
       </div>
       {% endif %}
@@ -706,18 +757,18 @@ AGENT_DETAIL_TEMPLATE = """
     <div style="padding:22px 32px">
       <div class="kick" style="margin-bottom:14px">Holding</div>
       {% if holdings %}
-      <div style="display:grid;grid-template-columns:repeat({{ 2 if holdings|length > 1 else 1 }},minmax(0,1fr));border-top:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)">
+      <div style="display:grid;grid-template-columns:repeat({{ 2 if holdings|length > 1 else 1 }},minmax(0,1fr));border-top:1px solid var(--border)">
         {% for h in holdings %}
-        <div style="padding:16px 22px 16px 0;{% if not loop.last and holdings|length > 1 %}border-right:1px solid color-mix(in srgb,var(--color-text) 18%,transparent){% endif %}">
+        <div style="padding:16px 22px 16px 0;{% if not loop.last and holdings|length > 1 %}border-right:1px solid var(--border){% endif %}">
           <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px">
-            <span style="font:800 24px var(--font-heading)">{{ h.symbol }}</span>
+            <span style="font-family:var(--mono);font-weight:600;font-size:22px">{{ h.symbol }}</span>
             {% if h.change_pct is not none %}
-            <span class="num" style="font:800 24px var(--font-heading);{% if h.change_pct < 0 %}color:var(--color-accent-700){% endif %}">
+            <span class="num" style="font-weight:600;font-size:22px;color:{{ 'var(--green)' if h.change_pct >= 0 else 'var(--rose)' }}">
               {{ "+" if h.change_pct >= 0 else "−" }}{{ "%.1f"|format(h.change_pct|abs) }}%
             </span>
             {% endif %}
           </div>
-          <div class="num" style="font-size:12.5px;color:color-mix(in srgb,var(--color-text) 58%,transparent)">
+          <div class="num" style="font-size:12.5px;color:var(--text-faint)">
             {{ "%.4f"|format(h.qty) }} @ ${{ "%.4f"|format(h.entry) }}
             {% if h.last %}&rarr; ${{ "%.4f"|format(h.last) }}{% endif %}
             &nbsp;·&nbsp; ${{ "%.2f"|format(h.value) }}
@@ -726,7 +777,7 @@ AGENT_DETAIL_TEMPLATE = """
         {% endfor %}
       </div>
       {% else %}
-      <div class="num" style="font-size:13px;color:color-mix(in srgb,var(--color-text) 45%,transparent)">
+      <div class="num" style="font-size:13px;color:var(--text-faint)">
         Holding nothing — everything is sitting as cash.
       </div>
       {% endif %}
@@ -736,15 +787,15 @@ AGENT_DETAIL_TEMPLATE = """
     <div style="padding:22px 32px 28px">
       <div class="kick" style="margin-bottom:12px">Decision log · {{ decision_count }} total</div>
       {% for d in decisions %}
-      <div class="log-row" {% if loop.last %}style="border-bottom:1px solid color-mix(in srgb,var(--color-text) 18%,transparent)"{% endif %}>
-        <span class="num" style="font-size:12px;color:color-mix(in srgb,var(--color-text) 50%,transparent)">{{ d.created_at.strftime("%H:%M:%S") }}</span>
-        <span style="width:8px;height:8px;display:block;{% if d.action == 'buy' %}background:var(--color-accent){% elif d.action == 'sell' %}background:var(--color-text){% else %}border:1px solid var(--color-divider){% endif %}"></span>
-        <span class="num" style="font-weight:700;font-size:13px">{{ d.symbol or "—" }}</span>
-        <span style="font-size:13px;color:color-mix(in srgb,var(--color-text) 72%,transparent)">{{ (d.reasoning or "")[:150] }}</span>
-        <span class="num" style="font-size:12px;text-align:right">{{ d.action }}</span>
+      <div class="log-row" {% if loop.last %}style="border-bottom:1px solid var(--border)"{% endif %}>
+        <span class="num" style="font-size:12px;color:var(--text-faint)">{{ d.created_at.strftime("%H:%M:%S") }}</span>
+        <span style="width:8px;height:8px;border-radius:50%;display:block;{% if d.action == 'buy' %}background:var(--green){% elif d.action == 'sell' %}background:var(--rose){% else %}border:1px solid var(--text-faint){% endif %}"></span>
+        <span class="num" style="font-weight:600;font-size:13px">{{ d.symbol or "—" }}</span>
+        <span style="font-size:13px;color:var(--text-dim)">{{ (d.reasoning or "")[:150] }}</span>
+        <span class="num" style="font-size:12px;text-align:right;color:var(--text-faint)">{{ d.action }}</span>
       </div>
       {% else %}
-      <div class="num" style="font-size:13px;color:color-mix(in srgb,var(--color-text) 45%,transparent)">No decisions recorded yet.</div>
+      <div class="num" style="font-size:13px;color:var(--text-faint)">No decisions recorded yet.</div>
       {% endfor %}
     </div>
   </div>
@@ -771,7 +822,7 @@ tick();setInterval(tick,1000);
 </script>
 </body>
 </html>
-""".replace("__TOKENS__", MODERNIST_TOKENS)
+""".replace("__TOKENS__", DETAIL_TOKENS)
 
 
 @app.route("/agent/<name>")
@@ -868,4 +919,4 @@ def agent_detail(name):
     )
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8090)
+    app.run(host="0.0.0.0", port=8095)

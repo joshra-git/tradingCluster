@@ -7,8 +7,8 @@ spec:
   selector:
     app: dashboard
   ports:
-    - port: 8090
-      targetPort: 8090
+    - port: 8095
+      targetPort: 8095
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -30,7 +30,7 @@ spec:
           image: trading-dashboard:latest
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8090
+            - containerPort: 8095
           env:
             - name: POSTGRES_PASSWORD
               valueFrom:
