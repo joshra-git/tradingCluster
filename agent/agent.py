@@ -37,7 +37,7 @@ log = logging.getLogger("agent")
 AGENT_NAME = os.environ["AGENT_NAME"]
 CONTROLLER_URL = os.environ["CONTROLLER_URL"]
 
-LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-6")
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-5")
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -51,7 +51,16 @@ DECISION_TOOL = {
             "symbol": {"type": "string"},
             "qty": {"type": "number"},
             "stop_loss_pct": {"type": "number", "description": "required for buy actions"},
-            "reasoning": {"type": "string"},
+            "reasoning": {
+                "type": "string",
+                "maxLength": 600,
+                "description": (
+                    "Three or four short sentences of plain English, under 600 characters "
+                    "total. Give the decision and the single main reason for it. Do not "
+                    "work through the candidates one by one, and do not use headings, "
+                    "bold text or bullet points."
+                ),
+            },
         },
         "required": ["action", "reasoning"],
     },
@@ -113,7 +122,11 @@ Write the way you would explain it to a friend who has never bought a share befo
   climb" is an explanation.
 - When you reject a candidate, say plainly why in one short clause, e.g. "skipped GTBP
   because it jumped all at once in a single day, which often falls back just as fast".
-- Aim for three or four short sentences a beginner could read out loud and follow.
+- Three or four short sentences, under 600 characters in total. This is a strict budget,
+  not a target to fill. Give the decision and the one main reason behind it.
+- Write one short plain paragraph. Do NOT give each candidate its own section or verdict,
+  and do not use headings, bold text or bullet points. If you passed on everything, one
+  clause saying why is enough - you do not owe each candidate an explanation.
 
 OUTPUT FORMAT
 Always report your decision using the trade_decision tool. Every buy decision must
@@ -154,7 +167,10 @@ Current market snapshot: {json.dumps(market_snapshot)}"""
     asset_word = "cryptocurrency" if status.get("asset_class") == "crypto" else "stock"
     response = client.messages.create(
         model=LLM_MODEL,
-        max_tokens=1024,
+        # A ceiling, not a reservation - unused headroom costs nothing. Kept well above
+        # the 600-char reasoning budget because hitting the cap truncates the tool call
+        # mid-JSON, which lands in the ledger as a decision with no reasoning at all.
+        max_tokens=2048,
         system=[{"type": "text", "text": PLAYBOOK, "cache_control": {"type": "ephemeral"}}],
         tools=[DECISION_TOOL],
         tool_choice={"type": "tool", "name": "trade_decision"},

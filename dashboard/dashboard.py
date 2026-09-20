@@ -18,10 +18,15 @@ SYMBOL_INFO = {
     "QQQ": {"name": "Invesco QQQ Trust", "desc": "Tracks the Nasdaq-100 — mostly large tech and growth companies"},
 }
 
-# Sonnet 4.6 published pricing per 1M tokens - used only to estimate spend from
-# tokens actually used. Not the same as your real balance (Anthropic doesn't
-# expose that via API) but it shows burn rate, which is the useful part overnight.
-# Free tier has no per-token cost, so the useful number is calls against the daily cap.
+# Published pricing per 1M tokens for the model the agents run (agent/agent.py
+# LLM_MODEL). Used only to estimate spend from tokens when real billed figures
+# from the Admin API aren't available. Change these whenever LLM_MODEL changes -
+# otherwise the dashboard keeps pricing new traffic at the old model's rates.
+USD_PER_MTOK_INPUT = 2.00       # claude-sonnet-5
+USD_PER_MTOK_OUTPUT = 10.00
+USD_PER_MTOK_CACHE_READ = 0.20   # 0.1x input
+USD_PER_MTOK_CACHE_WRITE = 2.50  # 1.25x input
+
 # Keep this in sync with daily_call_budget in the tier ConfigMap.
 DAILY_CALL_BUDGET = int(os.environ.get("DAILY_CALL_BUDGET", "1400"))
 
@@ -495,12 +500,14 @@ def dashboard():
                        COALESCE(SUM(cache_read_tokens),0) AS cr, COALESCE(SUM(cache_creation_tokens),0) AS cw
                 FROM api_usage WHERE created_at >= CURRENT_DATE - INTERVAL '6 days'
             """)[0]
-            spend_usd_week = (t["i"]/1e6*3 + t["o"]/1e6*15 + t["cr"]/1e6*0.3 + t["cw"]/1e6*3.75)
+            spend_usd_week = (t["i"]/1e6*USD_PER_MTOK_INPUT + t["o"]/1e6*USD_PER_MTOK_OUTPUT
+                              + t["cr"]/1e6*USD_PER_MTOK_CACHE_READ
+                              + t["cw"]/1e6*USD_PER_MTOK_CACHE_WRITE)
             t2 = query("""
                 SELECT COALESCE(SUM(input_tokens),0) AS i, COALESCE(SUM(output_tokens),0) AS o
                 FROM api_usage WHERE created_at::date = CURRENT_DATE
             """)[0]
-            spend_usd_today = (t2["i"]/1e6*3 + t2["o"]/1e6*15)
+            spend_usd_today = (t2["i"]/1e6*USD_PER_MTOK_INPUT + t2["o"]/1e6*USD_PER_MTOK_OUTPUT)
         except Exception:
             spend_usd_week = spend_usd_today = 0.0
 
@@ -525,8 +532,9 @@ def dashboard():
     for r in usage_rows:
         # Cache reads bill at 10% of input, cache writes at 125%. Falls back to
         # plain input/output pricing for rows written before caching existed.
-        usd = (float(r["inp"])/1e6*3 + float(r["outp"])/1e6*15
-               + float(r["cread"] or 0)/1e6*0.3 + float(r["cwrite"] or 0)/1e6*3.75)
+        usd = (float(r["inp"])/1e6*USD_PER_MTOK_INPUT + float(r["outp"])/1e6*USD_PER_MTOK_OUTPUT
+               + float(r["cread"] or 0)/1e6*USD_PER_MTOK_CACHE_READ
+               + float(r["cwrite"] or 0)/1e6*USD_PER_MTOK_CACHE_WRITE)
         usage_days.append({
             "day": r["day"], "calls": r["calls"],
             "inp": int(r["inp"]), "outp": int(r["outp"]),
