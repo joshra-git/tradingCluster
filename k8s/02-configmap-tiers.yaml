@@ -54,5 +54,5 @@ data:
     # Dip-buy guardrails for crypto
     dip_buy_guardrails_enabled: true
     crypto_max_24h_runup_pct: 10
-    crypto_min_pullback_from_high_pct: 2
+    crypto_min_pullback_from_high_pct: 1
 

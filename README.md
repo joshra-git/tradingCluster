@@ -28,13 +28,22 @@ Every proposal passes through a fixed set of deterministic checks before
 anything is actually sent to Alpaca:
 
 - **Mandatory stop-loss** on every buy — no exceptions.
+- **One agent per symbol** — if another agent already holds a name, this one
+  has to find something else, so an identical shortlist can't make two agents
+  quietly double up on the same bet.
 - **Max position size** as a fraction of that agent's own balance, so one bad
-  call can't wipe out a disproportionate share of its capital.
+  call can't wipe out a disproportionate share of its capital. Stocks round
+  down to whole shares; crypto is allowed fractional sizing.
 - **Daily loss circuit breaker** — an agent that's down more than a set % on
   the day stops trading until tomorrow.
 - **Account-wide PDT awareness** — the pattern-day-trader rule applies to the
   whole Alpaca account, not per-agent, so this check looks at all agents'
-  combined activity, not just one.
+  combined activity, not just one. It doesn't apply to crypto at all — there's
+  no day-trade rule for it.
+- **Crypto dip-buy guardrail** — crypto-only: won't buy something already up
+  more than a configured % in the last 24 hours unless it's pulled back at
+  least a little from that high. The point is entering on a pullback, not at
+  the peak.
 
 Claude decides *what* to do. This layer decides *whether it's allowed to*.
 That split is deliberate — an LLM should never be the last line of defense
@@ -60,6 +69,24 @@ you have to babysit:
 
 This is the one piece of logic explicitly kept fixed by request — the risk
 rules above it can change, but this scaling mechanism is the backbone.
+
+## Exits: a trailing stop, not a fixed take-profit
+
+Selling used to be a straight two-sided rule: stop-loss below entry, fixed
+take-profit above it. The take-profit side capped every winner at the same
+percentage regardless of whether it had further to run, so it's been replaced
+by a **trailing stop**: the stop is measured down from the highest price seen
+since entry, not from the entry price itself. A position that keeps climbing
+drags its stop up behind it and is never force-sold for "winning too much" —
+it only exits once the move actually turns over by the stop distance from its
+peak. Crypto uses a wider stop distance than stocks (it swings harder), but
+the same trailing mechanism, not a separate fixed target.
+
+This check runs every 60 seconds in the Controller against live prices,
+independent of any agent's own cycle or any model call — a stop-loss that
+depends on an API call succeeding isn't really a stop-loss. Claude can still
+choose to sell earlier for its own reasons; this is just the backstop that
+always fires regardless.
 
 ## The market regime brake
 
@@ -90,17 +117,35 @@ upside by lagging recoveries. It has not been backtested.
 ## Trading only when it's worth paying for
 
 Claude API calls cost real money per call, so the system doesn't think at a
-constant rate around the clock:
+constant rate around the clock, and stocks and crypto are paced differently
+because "market hours" doesn't mean anything for crypto.
 
-- **During NYSE market hours** (9:30am–4pm ET, Mon–Fri): a full decision
-  cycle every 5 minutes.
-- **Outside those hours** (pre-market, after-hours, weekends): one check per
-  hour instead — enough to notice something material without burning tokens
-  overnight for no reason.
+**Stocks** follow the NYSE session: a check every 90 seconds while the market
+is open, once every 10 minutes pre-market/after-hours/weekday-closed, and
+once an hour on weekends.
 
-This alone cut real cycle volume from ~288/day to ~95/day per agent, which is
-roughly a 3x reduction in spend without losing responsiveness when it
-actually matters.
+**Crypto never closes**, so instead of a session it follows *the owner's own
+waking hours* (Brisbane time, configurable) — a check every 2 minutes while
+he's awake and could plausibly be watching, dropping to once every 30 minutes
+overnight. This is the actual point of running crypto at all: trading happens
+while someone is awake to see it, instead of overnight in a US session no one
+in Brisbane is up for.
+
+On top of that base pacing:
+
+- **Hunting vs. holding.** An agent with cash to deploy checks often — a good
+  entry is time-sensitive. An agent that's already fully invested has nothing
+  to decide (the trailing stop handles exits without any model call), so it
+  slows down to an occasional check-in whose only purpose is letting Claude
+  bail out early for a judgement reason. This is the single biggest lever on
+  cost: without it, running this system would cost more per week than the
+  profit target it's chasing.
+- **A daily call budget** across all agents acts as a hard circuit breaker —
+  originally sized around a free-tier limit, it's now kept specifically so a
+  crash-looping agent can't run up a real bill overnight.
+
+Together this runs at roughly tens of model calls per agent per week rather
+than thousands.
 
 ## What gets remembered
 
@@ -116,21 +161,29 @@ as it happens:
 - **Every dollar that moves** between agents (spawns, culls, manual
   injections) — so the capital's history is traceable, not just its current
   number.
-- **Actual token usage per call**, used to estimate real spend. Worth being
-  precise about this one: Anthropic doesn't expose a live credit balance
-  through the API at all — this is an honest estimate from real usage, not
-  the real number, and the dashboard says so.
+- **Actual token usage per call**, used to estimate spend by default. Where
+  available, **real billed USD spend** is pulled directly from Anthropic's
+  Usage & Cost Admin API every 6 hours instead — this needs an admin-level API
+  key and an organisation account, so it's an upgrade over the token estimate,
+  not a replacement requirement. The dashboard converts that USD figure to AUD
+  using a daily-fetched exchange rate, and clearly marks the number as
+  estimated or a stale fallback rate whenever it can't get a live one — a
+  guessed number is never presented as if it were real.
 
 ## What it's watching
 
-**For crypto:** a fixed list of twelve established coins — Bitcoin, Ethereum,
-Solana, XRP, Cardano, Chainlink and similar. Deliberately boring. The
-alternative is asking the exchange "what moved most today", which returns
-whatever spiked hardest — usually memecoins about to give it all back.
+**For crypto:** a fixed, hand-maintained list (currently around thirty coins)
+rather than a live ranking, because Alpaca doesn't expose market-cap data and
+its "movers" screener returns whatever spiked hardest today — which is how
+memecoins kept reaching the shortlist. On top of the list itself, a **dip-buy
+guardrail** blocks buying something that's already up sharply in the last 24
+hours unless it's pulled back at least a little from that high — entering on
+a pullback, not at the peak.
 
-**For stocks:** around eighty large companies (Apple, JPMorgan, Costco…) plus
-broad index funds like SPY and VOO, filtered to skip anything that has already
-run more than 25% or that swings violently day to day.
+**For stocks:** around eighty large, liquid companies (Apple, JPMorgan,
+Costco…) plus broad index funds like SPY and VOO, filtered to skip anything
+already up more than 25% in the lookback window or averaging more than an 8%
+daily high/low swing — too late, or too choppy to hold a stop through.
 
 Either way the principle is the same: buying things that have already spiked
 means buying from people sitting on profits who are looking to take them.
@@ -143,22 +196,30 @@ clocks (so you can see trading windows at a glance, not just guess), current
 market session, every agent's balance and tier, and a live feed of trades
 with full reasoning attached.
 
-## Two separate environments
+## Paper vs. live
 
-There are two independently configured copies of this system:
-
-- **Paper** — Alpaca's simulated account, currently sized for testing at
-  larger numbers ($50k/$100k tiers) so the scaling logic is easy to observe.
-- **Live** — real Alpaca account, real money, sized to the actual starting
-  capital ($50/$100 tiers). These are kept deliberately separate — different
-  credentials, different risk stakes — and changes to one don't
-  automatically apply to the other.
+The Controller reads a single `ALPACA_PAPER` flag to decide which Alpaca
+endpoint it talks to. Right now the cluster runs one environment at a time —
+currently **paper** (Alpaca's simulated account against real market prices) —
+rather than two independently deployed copies. Switching to live means real
+money, real broker credentials, and real stakes on the same risk logic; there
+is no separate live manifest set yet, so doing that today means changing the
+flag and secrets on the one deployment that exists, deliberately, not
+something to do by accident.
 
 ## Open ideas, discussed but not yet built
 
-A few improvements came up while researching how similar systems handle
-risk, not yet implemented:
+Roughly in priority order:
 
+- **No backtester, and this is the highest-value gap.** Everything in this
+  system — the scanning, ranking, and exit logic — is deterministic and
+  Alpaca provides 7+ years of historical bars, so a replay would cost almost
+  nothing in model calls and could answer in an afternoon what live running
+  takes months to reveal. Right now every rule in this document is a
+  hypothesis, not a validated one.
+- **No self-healing for missing agent pods.** If an agent's Kubernetes
+  Deployment gets deleted, the ledger still lists it as active but nothing
+  recreates the pod — this has caused real confusion more than once.
 - **Correlation-aware position limits** — SPY and QQQ move together most of
   the time. Right now each agent's risk check only looks at its own
   position; nothing stops two agents from both going long the same direction
@@ -166,16 +227,15 @@ risk, not yet implemented:
 - **Position sizing tied to stop-loss distance**, instead of a flat % of
   balance — sizing down automatically when Claude sets a wide/cautious stop,
   rather than treating a 1%-stop trade and a 10%-stop trade the same way.
-- **No explicit take-profit logic** — right now, when to sell is entirely up
-  to Claude's judgment each cycle, with no deterministic backstop the way the
-  stop-loss is one.
 - **No awareness of US market holidays** — the market-hours check knows
   weekday/weekend and clock time, but would treat a holiday like Thanksgiving
   as a normal trading day.
-- **Real market data is still limited to price + 5-day trend** — no volume,
-  no news/sentiment, no broader technical indicators. Claude has repeatedly
-  and correctly said it wants more signal than this before committing capital
-  confidently.
+- **No cleanup on growing tables** — `decisions`, `market_scans`, and
+  `equity_snapshots` grow forever with no pruning currently wired in.
+- **Real market data is still limited to price + a short trend window** — no
+  volume, no news/sentiment, no broader technical indicators. Claude has
+  repeatedly and correctly said it wants more signal than this before
+  committing capital confidently.
 
 # Technical architecture
 
@@ -228,18 +288,37 @@ external hosts. True FQDN-level filtering would need a CNI like Cilium.
 
 ## Database
 
-Six tables in Postgres: `agents` (balance, tier, status per agent),
-`trades` (every proposal, approved or not, with reasoning), `positions`
-(current holdings per agent/symbol), `capital_events` (every dollar moved
-between agents or the pool), `unallocated_pool` (uncommitted cash), and
-`api_usage` (tokens per call, for the spend estimate).
+The base ledger (`db/schema.sql`, applied on Postgres's first boot) holds
+`agents`, `trades`, `capital_events`, `unallocated_pool`, `positions`, and
+`api_usage`. The Controller has since grown several more tables at startup
+via `CREATE TABLE IF NOT EXISTS` — no migration tool, just idempotent
+create/alter statements run every time it boots:
+
+| Table | Holds |
+| --- | --- |
+| `agents` | name, status, balance, min/max capital, parent, strategy JSON |
+| `trades` | every proposal incl. rejected ones, with reasoning and fill price |
+| `positions` | current holdings per agent/symbol, plus last price and high-water mark |
+| `capital_events` | every dollar moved between agents/pool |
+| `unallocated_pool` | single row, uncommitted cash |
+| `api_usage` | tokens per call, for the token-based spend estimate |
+| `decisions` | every decision incl. holds — what the dashboard reads |
+| `market_scans` | discovery results (stocks only) |
+| `shortlist_cache` | latest computed shortlist, so the dashboard can read it without triggering its own broker calls |
+| `market_regime` | hourly regime score, label, and component breakdown |
+| `api_costs` | real billed USD per day, from the Admin API |
+| `fx_rates` | USD→AUD rate, flagged live or fallback |
+| `equity_snapshots` | per-agent value over time, for the detail-page chart |
 
 ## Images
 
 Three images (`trading-controller`, `trading-agent`, `trading-dashboard`),
 built locally and loaded directly into the `kind` cluster — no external
-container registry involved. Controller listens on 8080, dashboard on 8090,
-both internal to the cluster and reached locally via `kubectl port-forward`.
+container registry involved. Controller listens on 8080, dashboard on
+**8095** (this has drifted before — if a port-forward connects but then
+refuses the connection, check `grep app.run dashboard/dashboard.py` against
+the Service port first). Both are internal to the cluster and reached
+locally via `kubectl port-forward`.
 
 # Setting this up from scratch
 
@@ -518,7 +597,7 @@ kubectl -n trading exec deploy/controller -- python3 -c "
 import db
 with db.get_conn() as conn:
     cur = conn.cursor()
-    cur.execute('TRUNCATE agents, trades, capital_events, positions, decisions, market_scans, api_usage, equity_snapshots RESTART IDENTITY CASCADE')
+    cur.execute('TRUNCATE agents, trades, capital_events, positions, decisions, market_scans, api_usage, equity_snapshots, shortlist_cache RESTART IDENTITY CASCADE')
     cur.execute('UPDATE unallocated_pool SET balance = 0')
 print('cleared')
 "
