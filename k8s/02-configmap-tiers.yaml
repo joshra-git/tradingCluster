@@ -51,3 +51,8 @@ data:
 
     daily_call_budget: 1400
     reconcile_interval_seconds: 60
+    # Dip-buy guardrails for crypto
+    dip_buy_guardrails_enabled: true
+    crypto_max_24h_runup_pct: 10
+    crypto_min_pullback_from_high_pct: 2
+

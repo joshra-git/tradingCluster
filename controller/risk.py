@@ -40,6 +40,24 @@ def validate_proposal(agent, proposal, config, todays_pnl, account_day_trade_cou
             and symbol in claimed_symbols):
         return False, f"another agent already holds {symbol} - keeping the eggs in different baskets", 0
 
+    # 2b. Dip-buy guardrails for crypto. Don't buy something already
+    #     up hard in the last 24h - enter on a pullback, not at the peak.
+    #     Fails open (no stats = no block) so a data hiccup can't halt trades.
+    if side == "buy" and is_crypto and config.get("dip_buy_guardrails_enabled", True):
+        stats = proposal.get("stats_24h")
+        if stats is None:
+            from alpaca_client import get_crypto_24h_stats
+            stats = get_crypto_24h_stats(symbol)
+        if stats:
+            max_runup = config.get("crypto_max_24h_runup_pct", 10)
+            min_pullback = config.get("crypto_min_pullback_from_high_pct", 2)
+            if stats["change_24h_pct"] > max_runup:
+                return False, (f"{symbol} is up {stats['change_24h_pct']:.1f}% in 24h "
+                               f"(cap {max_runup}%) - waiting for a pullback"), 0
+            if stats["pullback_from_high_pct"] < min_pullback:
+                return False, (f"{symbol} only {stats['pullback_from_high_pct']:.1f}% below "
+                               f"24h high - want at least {min_pullback}% pullback"), 0
+
     # 3. Max position size as a fraction of this agent's own balance.
     max_position_pct = config.get("max_position_pct", 0.25)
     ref_price = proposal.get("ref_price", 0)

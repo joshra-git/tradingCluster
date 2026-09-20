@@ -404,3 +404,63 @@ def broker_position_prices():
 
 def price_for(symbol, asset_class):
     return get_crypto_price(symbol) if asset_class == "crypto" else get_latest_price(symbol)
+
+
+def get_crypto_24h_stats(symbol):
+    """Rolling 24-hour context for a crypto pair.
+    Returns None on failure so the guardrail fails open."""
+    try:
+        req = CryptoBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Hour,
+            start=datetime.now() - timedelta(hours=26),
+        )
+        bars = crypto_data_client.get_crypto_bars(req)[symbol][-24:]
+        if len(bars) < 2:
+            return None
+        high_24h = max(float(b.high) for b in bars)
+        low_24h = min(float(b.low) for b in bars)
+        open_24h = float(bars[0].open)
+        current = get_crypto_price(symbol)
+        change_pct = (current - open_24h) / open_24h * 100 if open_24h else 0
+        pullback_pct = (high_24h - current) / high_24h * 100 if high_24h else 0
+        return {
+            "current": current,
+            "high_24h": high_24h,
+            "low_24h": low_24h,
+            "change_24h_pct": round(change_pct, 2),
+            "pullback_from_high_pct": round(pullback_pct, 2),
+        }
+    except Exception as e:
+        log.warning(f"could not fetch 24h stats for {symbol}: {e}")
+        return None
+
+
+def get_crypto_24h_stats(symbol):
+    """Rolling 24-hour context for a crypto pair.
+    Returns None on failure so the guardrail fails open."""
+    try:
+        req = CryptoBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Hour,
+            start=datetime.now() - timedelta(hours=26),
+        )
+        bars = crypto_data_client.get_crypto_bars(req)[symbol][-24:]
+        if len(bars) < 2:
+            return None
+        high_24h = max(float(b.high) for b in bars)
+        low_24h = min(float(b.low) for b in bars)
+        open_24h = float(bars[0].open)
+        current = get_crypto_price(symbol)
+        change_pct = (current - open_24h) / open_24h * 100 if open_24h else 0
+        pullback_pct = (high_24h - current) / high_24h * 100 if high_24h else 0
+        return {
+            "current": current,
+            "high_24h": high_24h,
+            "low_24h": low_24h,
+            "change_24h_pct": round(change_pct, 2),
+            "pullback_from_high_pct": round(pullback_pct, 2),
+        }
+    except Exception as e:
+        log.warning(f"could not fetch 24h stats for {symbol}: {e}")
+        return None
