@@ -552,7 +552,12 @@ def reconcile():
 
     # --- sanity check: does the ledger's total match what Alpaca actually holds? ---
     try:
-        ledger_total = sum(float(a["current_balance"]) for a in agents) + float(db.get_pool_balance())
+        held_total = sum(
+            float(p["qty"]) * float(p["last_price"] or p["avg_entry_price"] or 0)
+            for p in positions
+        )
+        ledger_total = (sum(float(a["current_balance"]) for a in agents)
+                         + float(db.get_pool_balance()) + held_total)
         account = alpaca_client.get_account()
         drift = abs(ledger_total - account["portfolio_value"])
         if drift > 1.0:
