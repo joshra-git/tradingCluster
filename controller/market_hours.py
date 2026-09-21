@@ -32,18 +32,14 @@ def get_market_session():
 
 
 def get_crypto_session(cfg):
-    """Crypto is always tradable, so this reports whether the user is likely
-    awake rather than whether a market is open: active | quiet."""
-    tz = ZoneInfo(cfg.get("crypto_timezone", "Australia/Brisbane"))
-    hour = datetime.now(tz).hour
-    start = cfg.get("crypto_active_start_hour", 7)
-    end = cfg.get("crypto_active_end_hour", 22)
-    if start <= end:
-        active = start <= hour < end
-    else:
-        # Handles a window that wraps past midnight, e.g. 22:00 -> 06:00
-        active = hour >= start or hour < end
-    return "active" if active else "quiet"
+    """Crypto never closes, so unlike stocks there's no exchange-hours concept
+    here at all - it's always 'active'. This used to gate thinking to the
+    owner's own waking hours (so trading only happened while he could watch
+    it), but that reasoning stopped holding once Telegram notifications made
+    "watching it happen" available regardless of when a trade fires. Kept as
+    a function (not just a constant) so session_for()'s interface stays the
+    same as the stocks path."""
+    return "active"
 
 
 def session_for(asset_class, cfg):
@@ -60,16 +56,16 @@ def should_think(asset_class, session, can_act, cfg):
     handles the exit without any model involvement, so it only checks in
     occasionally in case there is a judgement reason to get out early.
 
-    When the market is shut, neither applies: nothing can be bought or sold, so
-    no call is justified at all.
+    When the stock market is shut, neither applies: nothing can be bought or
+    sold, so no call is justified at all. Crypto has no equivalent "shut" state
+    any more - session_for() always reports it active, so this branch below is
+    stocks-only in practice now.
 
     Returns (think: bool, interval_seconds: int, why: str).
     """
     tradable = (session == "active") if asset_class == "crypto" else (session == "open")
 
     if not tradable:
-        if asset_class == "crypto":
-            return False, cfg["cycle_crypto_quiet_seconds"], "outside your active hours"
         idle = cfg["cycle_weekend_seconds"] if session == "weekend" else cfg["cycle_weekday_seconds"]
         return False, idle, f"US market is {session}"
 

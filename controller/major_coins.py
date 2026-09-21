@@ -57,35 +57,48 @@ def tradable_universe():
     return _TRADABLE_CACHE
 
 
-def screen(lookback_days=20, top_n=5):
-    """Rank the major coins by momentum over the lookback window.
+def rank_by_momentum(symbols, prices, closes_by_symbol, lookback_days=20, top_n=5):
+    """The actual ranking rule - pure arithmetic, no network calls. Both the
+    live Controller (via screen() below) and the backtester call this exact
+    function, so a backtest can never silently rank coins differently than
+    production does.
+
+    prices: {symbol: current_price}. closes_by_symbol: {symbol: [close, ...]},
+    oldest first, at least `lookback_days` of daily closes.
 
     Deliberately does NOT filter out falling coins the way the stocks path does -
     the intent here is to hold through swings, so the stop-loss protects the
     downside rather than the entry filter.
     """
+    scored = []
+    for sym in symbols:
+        if sym not in prices or sym not in closes_by_symbol:
+            continue
+        closes = closes_by_symbol[sym]
+        if len(closes) < 2:
+            continue
+        price = prices[sym]
+        change_pct = (price - closes[0]) / closes[0] * 100
+        scored.append({
+            "symbol": sym,
+            "price": float(f"{price:.8g}"),
+            f"{lookback_days}d_change_pct": round(change_pct, 2),
+            "recent_closes": [float(f"{c:.8g}") for c in closes[-10:]],
+        })
+
+    scored.sort(key=lambda x: x[f"{lookback_days}d_change_pct"], reverse=True)
+    return {x["symbol"]: x for x in scored[:top_n]}
+
+
+def screen(lookback_days=20, top_n=5):
+    """Live wrapper: fetches current quotes + bars, then hands off to
+    rank_by_momentum()."""
     symbols = tradable_universe()
     if not symbols:
         return {}
 
     prices = alpaca_client.get_crypto_batch_quotes(symbols)
     bars_by_symbol = alpaca_client.get_crypto_batch_bars(symbols, lookback_days)
+    closes_by_symbol = {sym: [float(b.close) for b in bars] for sym, bars in bars_by_symbol.items()}
 
-    scored = []
-    for sym in symbols:
-        if sym not in prices or sym not in bars_by_symbol:
-            continue
-        bars = bars_by_symbol[sym]
-        if len(bars) < 2:
-            continue
-        price = prices[sym]
-        change_pct = (price - float(bars[0].close)) / float(bars[0].close) * 100
-        scored.append({
-            "symbol": sym,
-            "price": float(f"{price:.8g}"),
-            f"{lookback_days}d_change_pct": round(change_pct, 2),
-            "recent_closes": [float(f"{float(b.close):.8g}") for b in bars[-10:]],
-        })
-
-    scored.sort(key=lambda x: x[f"{lookback_days}d_change_pct"], reverse=True)
-    return {x["symbol"]: x for x in scored[:top_n]}
+    return rank_by_momentum(symbols, prices, closes_by_symbol, lookback_days, top_n)

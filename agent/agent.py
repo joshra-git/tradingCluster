@@ -350,9 +350,9 @@ def run_cycle(status):
         log.warning(f"failed to report decision: {e}")
 
     _last_context["fingerprint"] = _fingerprint(snapshot)
-    _last_context["action"] = decision["action"]
 
     if decision["action"] == "hold":
+        _last_context["action"] = "hold"
         return
 
     proposal = {
@@ -368,9 +368,19 @@ def run_cycle(status):
         body = resp.json()
     except Exception:
         log.info(f"  RESULT: unexpected reply from the controller ({resp.status_code})")
+        _last_context["action"] = "hold"
         return
 
+    # Only a genuinely EXECUTED trade counts as "something changed, worth a
+    # re-check next cycle." A rejected or failed proposal is functionally a
+    # hold - nothing about the account moved - and the reason it was rejected
+    # (a deterministic risk-layer rule, or insufficient funds) won't change in
+    # the next 2 minutes either. Treating a rejection like a trade is what
+    # turned one candidate the risk layer kept blocking into a forced call
+    # every single cycle for hours: same proposal in, same rejection out, paid
+    # for again and again.
     if body.get("executed"):
+        _last_context["action"] = decision["action"]
         order = body.get("order", {})
         filled = order.get("filled_price")
         if filled:
@@ -385,6 +395,7 @@ def run_cycle(status):
             log.info(f"  NOTE:   The safety checks adjusted this - {note}")
     elif body.get("approved") is False:
         log.info(f"  RESULT: Blocked by the safety rules - {body.get('reason')}")
+        _last_context["action"] = "hold"
     else:
         err = str(body.get("error", ""))
         if "not fractionable" in err:
@@ -393,6 +404,7 @@ def run_cycle(status):
             log.info("  RESULT: Rejected - not enough spare cash in the account to cover this.")
         else:
             log.info(f"  RESULT: Order failed - {err}")
+        _last_context["action"] = "hold"
 
 
 SESSION_PLAIN_ENGLISH = {

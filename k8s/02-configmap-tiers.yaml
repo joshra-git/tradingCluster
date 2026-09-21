@@ -42,12 +42,12 @@ data:
     cycle_weekend_seconds: 3600
     holding_slowdown_factor: 3
 
-    # --- pacing: crypto follows YOUR waking hours, not an exchange bell ---
+    # --- pacing: crypto never closes, so it thinks on the same cadence
+    #     around the clock. crypto_timezone/crypto_active_end_hour only time
+    #     the once-daily Telegram summary now, not whether it thinks. ---
     crypto_timezone: "Australia/Brisbane"
-    crypto_active_start_hour: 7
     crypto_active_end_hour: 22
     cycle_crypto_active_seconds: 120
-    cycle_crypto_quiet_seconds: 1800
 
     daily_call_budget: 1400
     reconcile_interval_seconds: 60

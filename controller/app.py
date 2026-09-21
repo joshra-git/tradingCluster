@@ -15,6 +15,7 @@ import major_coins
 import market_hours
 import safe_universe
 import anthropic_admin
+import telegram_client
 
 # Log in Brisbane time, not UTC. Container logs default to UTC, which makes it
 # genuinely hard to line up "when did it buy that" against your own day.
@@ -31,7 +32,31 @@ _handler.setFormatter(_BrisbaneFormatter("%(asctime)s AEST  %(message)s"))
 logging.basicConfig(level=logging.INFO, handlers=[_handler], force=True)
 log = logging.getLogger("controller")
 
+# basicConfig above applies to every logger in the process, including
+# APScheduler's own - which announces every job starting and finishing at INFO
+# level ("Running job...", "...executed successfully"). That's pure scheduler
+# bookkeeping, not something that happened in the trading system, and it was
+# drowning out the lines that actually matter. Raised to WARNING: APScheduler
+# logs a genuine failure via .exception()/.error(), both above WARNING, so a
+# broken job (like the reconcile() crash this caught) still surfaces - only
+# the "I started, I finished" noise goes quiet.
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+# Same problem, different source: Flask's dev server logs every single HTTP
+# request/response line by pod IP - "POST /heartbeat 200", "GET /screen 200" -
+# once per agent per cycle. That's traffic, not an event; the endpoint
+# handlers themselves already log the events that matter (a fill, an exit, a
+# regime score). An actual server error still surfaces through Flask's own
+# exception handling, which isn't gated by this logger.
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
 app = Flask(__name__)
+
+# Whether the cost-vs-profit circuit breaker is currently blocking new
+# positions - recomputed once per reconcile() pass (not per heartbeat, which
+# is far more frequent than this needs to be), read by heartbeat() to gate
+# can_act. Module-level is fine: a pod restart just re-evaluates fresh on the
+# next reconcile pass, a safe default rather than a risky one.
+_cost_breaker = {"tripped": False}
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +109,15 @@ def propose():
                                 "reason": f"market regime is {row['regime']} - no new positions"}), 200
             cfg = {**cfg, "max_position_pct": cfg["max_position_pct"] * mult}
 
+    # Same enforcement shape as the regime check above: can_act only slows how
+    # OFTEN an agent gets asked (heartbeat's should_think cadence) - it never
+    # blocks a buy that reaches this endpoint anyway, e.g. during a slower
+    # holding-mode check-in. Without a real reject here too, a tripped cost
+    # breaker would only be a rate limiter, not the guarantee it's meant to be.
+    if body["side"] == "buy" and not alpaca_client.PAPER and _cost_breaker["tripped"]:
+        return jsonify({"approved": False,
+                        "reason": "Claude spend has outrun trading profit this week - no new positions"}), 200
+
     claimed = db.symbols_claimed_by_others(agent["id"])
     approved, reason, sized_qty = risk.validate_proposal(
         agent, body, cfg, todays_pnl, account_day_trades, claimed_symbols=claimed
@@ -122,10 +156,26 @@ def propose():
     )
 
     if filled_price:
+        balance_before = float(agent["current_balance"])
         delta = sized_qty * filled_price * (1 if body["side"] == "sell" else -1)
-        db.update_balance(agent_name, float(agent["current_balance"]) + delta)
+        new_balance = balance_before + delta
+        entry_price = None
+        if body["side"] == "sell":
+            pos = db.get_position(agent["id"], body["symbol"])
+            entry_price = float(pos["avg_entry_price"]) if pos and pos["avg_entry_price"] else None
+        db.update_balance(agent_name, new_balance)
         db.apply_fill_to_position(agent["id"], body["symbol"], body["side"], sized_qty, filled_price,
                                    body.get("stop_loss_pct"))
+        if body["side"] == "buy":
+            telegram_client.notify_buy(agent_name, body["symbol"], sized_qty, filled_price,
+                                        balance_before, new_balance,
+                                        stop_loss_pct=body.get("stop_loss_pct"),
+                                        reasoning=body.get("reasoning"))
+        else:
+            telegram_client.notify_sell(agent_name, body["symbol"], sized_qty, filled_price, entry_price,
+                                         new_balance, is_auto_exit=False,
+                                         opened_at=pos["opened_at"] if pos else None,
+                                         reasoning=body.get("reasoning"))
 
     return jsonify({"approved": True, "executed": True, "sizing_note": reason, "order": result}), 200
 
@@ -174,6 +224,30 @@ def screen():
             if agent_row:
                 taken = set(db.symbols_claimed_by_others(agent_row["id"]))
                 shortlist = {k: v for k, v in shortlist.items() if k not in taken}
+
+        # Same idea, a different rule: drop crypto candidates the dip-buy
+        # guardrail would block right now anyway (already up too much in the
+        # last 24h with no pullback yet). Without this, a fast-climbing coin
+        # stays the #1 momentum pick every cycle, gets proposed, gets
+        # rejected by risk.py for the exact same reason, and burns a model
+        # call each time - this is what kept happening with AVAX. This is a
+        # deterministic Alpaca lookup, not a Claude call - cheap insurance
+        # against paying repeatedly for an answer the risk layer already knows.
+        if asset_class == "crypto" and cfg.get("dip_buy_guardrails_enabled", True) and shortlist:
+            max_runup = cfg.get("crypto_max_24h_runup_pct", 10)
+            min_pullback = cfg.get("crypto_min_pullback_from_high_pct", 2)
+            blocked = []
+            for sym in list(shortlist):
+                try:
+                    stats = alpaca_client.get_crypto_24h_stats(sym)
+                except Exception as e:
+                    log.warning(f"24h stats lookup failed for {sym}, leaving it in the shortlist: {e}")
+                    continue
+                if stats and (stats["change_24h_pct"] > max_runup
+                              or stats["pullback_from_high_pct"] < min_pullback):
+                    blocked.append(sym)
+            if blocked:
+                shortlist = {k: v for k, v in shortlist.items() if k not in blocked}
 
         db.save_shortlist(shortlist)
     except Exception as e:
@@ -266,9 +340,20 @@ def heartbeat():
     if exposure <= 0:
         can_act = False
 
+    # Cost-vs-profit circuit breaker. Only ever blocks NEW positions, exactly
+    # like the regime brake above - existing holdings and their stop-losses
+    # are completely unaffected. Paper accounts never trip this; testing at a
+    # net cost while tuning is explicitly fine. Live is a different question -
+    # this is what actually enforces "must not cost more than it makes."
+    cost_breaker = not alpaca_client.PAPER and _cost_breaker["tripped"]
+    if cost_breaker:
+        can_act = False
+
     think, interval, why = market_hours.should_think(asset_class, session, can_act, cfg)
     if exposure <= 0 and not think:
         why = f"market regime is {regime_label} - not opening new positions"
+    elif cost_breaker and not think:
+        why = "Claude spend has outrun trading profit this week - not opening new positions"
 
     return jsonify({
         "status": agent["status"],
@@ -293,9 +378,9 @@ def heartbeat():
 def inject_capital():
     """Manual endpoint: curl this when you add real money to the account."""
     amount = float(request.get_json(force=True)["amount"])
-    db.set_pool_balance(db.get_pool_balance() + amount)
+    db.set_pool_balance(float(db.get_pool_balance()) + amount)
     db.log_capital_event(agent_id=None, event_type="injection", amount=amount)
-    return jsonify({"pool_balance": db.get_pool_balance()})
+    return jsonify({"pool_balance": float(db.get_pool_balance())})
 
 
 @app.route("/decision", methods=["POST"])
@@ -373,14 +458,92 @@ def sync_orders():
             alpaca_order_id=t["alpaca_order_id"], filled_price=price,
             filled_at=datetime.now(timezone.utc),
         )
+        balance_before = float(agent["current_balance"])
         delta = qty * price * (1 if t["side"] == "sell" else -1)
-        db.update_balance(t["agent_name"], float(agent["current_balance"]) + delta)
+        new_balance = balance_before + delta
+        entry_price = None
+        if t["side"] == "sell":
+            pos = db.get_position(agent["id"], t["symbol"])
+            entry_price = float(pos["avg_entry_price"]) if pos and pos["avg_entry_price"] else None
+        db.update_balance(t["agent_name"], new_balance)
         db.apply_fill_to_position(
             agent["id"], t["symbol"], t["side"], qty, price,
             float(t["stop_loss_pct"]) if t["stop_loss_pct"] else None,
         )
         log.info(f"order sync: {t['agent_name']} {t['side']} {qty} {t['symbol']} "
-                 f"filled at ${price:,.4f} - balance now ${float(agent['current_balance']) + delta:,.2f}")
+                 f"filled at ${price:,.4f} - balance now ${new_balance:,.2f}")
+        if t["side"] == "buy":
+            telegram_client.notify_buy(t["agent_name"], t["symbol"], qty, price,
+                                        balance_before, new_balance,
+                                        stop_loss_pct=float(t["stop_loss_pct"]) if t["stop_loss_pct"] else None,
+                                        reasoning=t.get("reasoning"))
+        else:
+            telegram_client.notify_sell(t["agent_name"], t["symbol"], qty, price, entry_price,
+                                         new_balance, is_auto_exit=False,
+                                         opened_at=pos["opened_at"] if pos else None,
+                                         reasoning=t.get("reasoning"))
+
+
+def _reconcile_position_qty(pos, agent_row, pos_asset_class, broker_qtys):
+    """Trues the ledger's recorded qty up against what Alpaca actually holds,
+    BEFORE any exit logic runs against it. Without this, a position closed
+    outside the Controller (sold manually, or resolved by an order this
+    ledger never learned about) leaves enforce_exits() trying to sell a
+    quantity that no longer exists, forever, failing with 'insufficient
+    balance' every single pass until someone notices and fixes it by hand -
+    which is exactly what was happening. This only ever adjusts the ledger;
+    it never places an order at the broker itself.
+
+    Returns the (possibly corrected) qty to use this pass, or None if the
+    position was fully gone and has already been closed out in the ledger -
+    the caller should skip straight to the next position."""
+    symbol = pos["symbol"]
+    ledger_qty = float(pos["qty"])
+    # Missing entirely from broker_qtys means the broker holds NONE of it -
+    # a dict lookup default of 0, not "no data, skip" (which .get(symbol)
+    # alone would wrongly imply, since a fully-closed position is exactly why
+    # the symbol wouldn't be a key at all).
+    actual_qty = broker_qtys.get(symbol, 0.0)
+    if actual_qty >= ledger_qty - 0.0001:
+        return ledger_qty  # broker has as much or more - nothing to true up
+
+    if actual_qty <= 0.0001:
+        # Gone entirely - closed outside the Controller. Credit the agent at
+        # today's price (we have no record of the actual external fill price)
+        # and clear it so enforce_exits() stops retrying something that isn't
+        # there.
+        try:
+            price = alpaca_client.price_for(symbol, pos_asset_class)
+        except Exception:
+            price = float(pos["last_price"] or pos["avg_entry_price"] or 0)
+        if not price or not agent_row:
+            log.error(f"position reconcile: {symbol} is gone at the broker for "
+                      f"{pos['agent_name']} but could not price it to credit the ledger")
+            return ledger_qty
+        proceeds = ledger_qty * price
+        new_balance = float(agent_row["current_balance"]) + proceeds
+        db.update_balance(pos["agent_name"], new_balance)
+        db.set_position_qty(pos["agent_id"], symbol, 0)
+        db.log_capital_event(agent_row["id"], "external_close_reconciled", proceeds,
+                              note=f"{symbol} was closed outside the Controller - "
+                                   f"reconciled at ~${price:,.4f}, not the actual fill price")
+        log.warning(f"position reconcile: {pos['agent_name']}'s {symbol} was gone at the "
+                    f"broker (closed manually?) - credited ${proceeds:,.2f} at today's price "
+                    f"and cleared it from the ledger")
+        telegram_client.notify_sell(
+            pos["agent_name"], symbol, ledger_qty, price, float(pos["avg_entry_price"] or 0),
+            new_balance, is_auto_exit=True,
+            cause_reason="closed outside the Controller — the ledger just caught up automatically",
+        )
+        return None
+
+    # Broker has some, just less than the ledger thinks (typically fee/
+    # rounding drift compounding over several fills) - true it down so a real
+    # exit can actually sell what's really there instead of being rejected.
+    log.warning(f"position reconcile: {pos['agent_name']}'s {symbol} ledger qty "
+                f"{ledger_qty} > broker qty {actual_qty} - truing the ledger down")
+    db.set_position_qty(pos["agent_id"], symbol, actual_qty)
+    return actual_qty
 
 
 def enforce_exits():
@@ -393,15 +556,20 @@ def enforce_exits():
     take_profit_pct = cfg["take_profit_pct"]
 
     broker_prices = alpaca_client.broker_position_prices()
+    broker_qtys = alpaca_client.broker_position_qtys()
     for pos in db.list_open_positions():
         symbol = pos["symbol"]
-        qty = float(pos["qty"])
         entry = float(pos["avg_entry_price"] or 0)
-        if entry <= 0 or qty <= 0:
+        if entry <= 0 or float(pos["qty"]) <= 0:
             continue
 
         agent_row = db.get_agent(pos["agent_name"])
         pos_asset_class = db.agent_asset_class(agent_row) if agent_row else "stocks"
+
+        qty = _reconcile_position_qty(pos, agent_row, pos_asset_class, broker_qtys)
+        if qty is None:
+            continue
+
         try:
             # Prefer the broker's own price for held positions - it is the
             # consolidated tape, not a single-venue quote.
@@ -471,8 +639,12 @@ def enforce_exits():
             filled_at=datetime.now(timezone.utc) if filled_price else None,
         )
         if filled_price:
-            db.update_balance(pos["agent_name"], float(agent["current_balance"]) + sell_qty * filled_price)
+            new_balance = float(agent["current_balance"]) + sell_qty * filled_price
+            db.update_balance(pos["agent_name"], new_balance)
             db.apply_fill_to_position(agent["id"], symbol, "sell", sell_qty, filled_price)
+            telegram_client.notify_sell(pos["agent_name"], symbol, sell_qty, filled_price, entry,
+                                         new_balance, is_auto_exit=True,
+                                         opened_at=pos["opened_at"], cause_reason=reason)
 
 
 def reconcile():
@@ -513,7 +685,7 @@ def reconcile():
             log.info(f"culling {agent['name']} at total value {total_value:.2f} "
                      f"(cash {balance:.2f} + positions {held_value:.2f}, floor {floor})")
             db.set_status(agent["name"], "culled")
-            db.set_pool_balance(db.get_pool_balance() + max(balance, 0))
+            db.set_pool_balance(float(db.get_pool_balance()) + max(balance, 0))
             db.log_capital_event(agent["id"], "cull_return", max(balance, 0))
             k8s_client.delete_agent_pod(agent["name"])
 
@@ -530,25 +702,89 @@ def reconcile():
     except Exception as e:
         log.error(f"equity snapshot failed: {e}")
 
-    pool = db.get_pool_balance()
-    if pool >= cfg["min_capital"]:
-        trending = [a for a in agents
-                    if a["status"] == "active"
-                    and db.rolling_pnl_trend(a["id"], cfg["trend_window_days"]) > 0]
-        if trending:
-            share = pool / len(trending)
-            for agent in trending:
-                if share >= cfg["min_capital"]:
-                    try:
-                        db.spawn_sibling_transaction(
-                            agent["name"], f"{agent['name']}-{uuid.uuid4().hex[:6]}",
-                            cfg["min_capital"], agent["strategy"],
-                        )
-                        pool -= cfg["min_capital"]
-                        k8s_client.spawn_agent_pod(f"{agent['name']}-pool", agent["strategy"])
-                    except Exception as e:
-                        log.error(f"pool allocation failed for {agent['name']}: {e}")
-            db.set_pool_balance(pool)
+    # Idle pool cash never just sits there below a lump-sum threshold. As the
+    # total (agents + pool) clears another whole min_capital share, a new
+    # agent spawns funded directly FROM THE POOL - never by debiting an
+    # existing agent's own trading balance, which is what the old
+    # spawn_sibling_transaction call here was actually doing despite
+    # decrementing the pool number alongside it. Whatever's left over (not
+    # enough for a whole new agent) tops up agents that are actually trending
+    # up rather than waiting around - new capital still never goes to
+    # something currently losing just because it exists.
+    pool = float(db.get_pool_balance())
+    active_agents = [a for a in agents if a["status"] == "active"]
+
+    if pool > 0 and active_agents:
+        total_capital = sum(float(a["current_balance"]) for a in active_agents) + pool
+        target_count = max(len(active_agents), int(total_capital // cfg["min_capital"]))
+
+        while len(active_agents) < target_count and pool >= cfg["min_capital"]:
+            child_name = f"agent-{uuid.uuid4().hex[:6]}"
+            classes = tier_config.enabled_asset_classes(cfg)
+            strategy = {"asset_class": classes[len(active_agents) % len(classes)]}
+            try:
+                db.spawn_from_pool_transaction(child_name, cfg["min_capital"], strategy,
+                                                cfg["min_capital"], cfg["max_capital"])
+                k8s_client.spawn_agent_pod(child_name, strategy)
+                pool -= cfg["min_capital"]
+                log.info(f"pool spawn: created {child_name} with ${cfg['min_capital']:.2f} "
+                         f"(pool now ${pool:.2f})")
+                active_agents = db.list_active_agents()
+            except Exception as e:
+                log.error(f"pool spawn failed: {e}")
+                break
+
+        # >= 0, not > 0: a brand-new agent with no trade history yet also reads
+        # as 0 here, and there's no evidence it's failing - only an agent with
+        # an actual recorded loss gets excluded from a top-up. The stricter
+        # "> 0, genuinely proving itself" bar still applies to spawning a new
+        # sibling elsewhere; this is just about not letting cash rot.
+        not_losing = [a for a in active_agents
+                      if db.rolling_pnl_trend(a["id"], cfg["trend_window_days"]) >= 0]
+        if pool > 0 and not_losing:
+            share = pool / len(not_losing)
+            for agent in not_losing:
+                db.update_balance(agent["name"], float(agent["current_balance"]) + share)
+                db.log_capital_event(agent["id"], "pool_topup", share,
+                                      note="idle pool cash distributed rather than left unused")
+            log.info(f"pool topup: distributed ${pool:.2f} across {len(not_losing)} agent(s) not currently losing")
+            pool = 0
+
+        db.set_pool_balance(pool)
+        agents = db.list_active_agents()  # refresh so the drift check below sees this pass's changes
+
+    # --- cost-vs-profit circuit breaker (live accounts only) ---
+    # Testing on paper is explicitly fine to run at a net cost while tuning
+    # the balance. Once real money is involved, spend must never be allowed
+    # to run ahead of what the system is actually making - so this compares
+    # trailing 7-day REALIZED profit only (not unrealized gains sitting in
+    # open positions, which could still evaporate) against trailing 7-day
+    # actual Claude cost. Only ever blocks new positions; never forces a
+    # sale, exactly like the regime brake.
+    try:
+        if not alpaca_client.PAPER:
+            window_hours = 168
+            # Need at least one closed trade before profit means anything -
+            # otherwise day one of going live has $0 realized profit against
+            # any nonzero cost, tripping the breaker before the first trade
+            # ever gets a chance to close and permanently blocking it.
+            _, sells = db.trade_counts_since(window_hours)
+            cost, cost_is_real = db.actual_cost_since(window_hours)
+            profit = db.realised_pnl_since(window_hours)
+            newly_tripped = sells > 0 and cost > profit
+            if newly_tripped != _cost_breaker["tripped"]:
+                _cost_breaker["tripped"] = newly_tripped
+                label = "estimated" if not cost_is_real else "billed"
+                if newly_tripped:
+                    log.warning(f"COST BREAKER TRIPPED: 7-day {label} spend ${cost:.2f} > "
+                                f"7-day realised profit ${profit:.2f} - blocking new positions")
+                    telegram_client.notify_cost_breaker(True, cost, profit, cost_is_real)
+                else:
+                    log.info(f"cost breaker cleared: 7-day {label} spend ${cost:.2f} <= "
+                             f"7-day realised profit ${profit:.2f}")
+                    telegram_client.notify_cost_breaker(False, cost, profit, cost_is_real)
+    except Exception as e:
+        log.error(f"cost breaker check failed: {e}")
 
     # --- sanity check: does the ledger's total match what Alpaca actually holds? ---
     try:
@@ -568,15 +804,19 @@ def reconcile():
 
 def bootstrap():
     """Runs once at Controller startup. If no agents exist yet, reads the REAL Alpaca
-    account balance and splits it across initial_pod_count agents at min_capital each.
-    Safe to run on every restart - it's a no-op once any agent exists."""
+    account balance and splits ALL of it evenly across initial_pod_count agents -
+    not min_capital each with the remainder left as unaccounted broker cash the
+    ledger has no row for. min_capital itself stays at the configured tier floor
+    (it's what sets each agent's cull threshold), separate from how much cash it
+    actually starts with. Safe to run on every restart - it's a no-op once any
+    agent exists."""
     if db.agent_count() > 0:
         log.info("agents already exist in the ledger, skipping auto-bootstrap")
         return
 
     cfg = tier_config.load()
     n = cfg["initial_pod_count"]
-    per_pod = cfg["min_capital"]
+    floor = cfg["min_capital"]
 
     try:
         account = alpaca_client.get_account()
@@ -585,15 +825,16 @@ def bootstrap():
         return
 
     available = account["cash"]
-    needed = per_pod * n
+    needed = floor * n
     if available < needed:
         log.warning(f"bootstrap: account has ${available:.2f} but needs ${needed:.2f} "
-                    f"for {n} agents at ${per_pod:.2f} each - not seeding anything")
+                    f"for {n} agents at ${floor:.2f} each - not seeding anything")
         return
 
+    per_pod = available / n
     classes = tier_config.enabled_asset_classes(cfg)
     log.info(f"bootstrap: account has ${available:.2f}, seeding {n} agents at ${per_pod:.2f} each "
-             f"across {classes}")
+             f"(floor ${floor:.2f}) across {classes}")
     for i in range(1, n + 1):
         name = f"agent-{i:03d}"
         # Round-robin across whatever is enabled. One class enabled = every agent
@@ -601,7 +842,8 @@ def bootstrap():
         asset_class = classes[(i - 1) % len(classes)]
         strategy = {"asset_class": asset_class}
         try:
-            db.create_agent(name, min_capital=per_pod, max_capital=cfg["max_capital"], strategy=strategy)
+            db.create_agent(name, min_capital=floor, max_capital=cfg["max_capital"],
+                             strategy=strategy, initial_balance=per_pod)
             k8s_client.spawn_agent_pod(name, strategy)
             log.info(f"bootstrap: created {name} trading {asset_class} with ${per_pod:.2f}")
         except Exception as e:
@@ -666,6 +908,120 @@ def run_discovery_scan():
         log.error(f"discovery scan failed: {e}")
 
 
+def _status_snapshot():
+    """Gathers the data for the scheduled daily summary - framed around the
+    last 24 hours, since that's what a daily digest is for. See
+    _live_status_snapshot() for the differently-framed on-demand /status
+    reply. Pure read - never touches the ledger."""
+    agents = db.list_active_agents()
+    positions = db.list_open_positions()
+
+    held_value = sum(
+        float(p["qty"]) * float(p["last_price"] or p["avg_entry_price"] or 0)
+        for p in positions
+    )
+    total_now = (sum(float(a["current_balance"]) for a in agents)
+                 + float(db.get_pool_balance()) + held_value)
+    total_24h_ago = db.equity_total_hours_ago(24)
+    buys, sells = db.trade_counts_since(24)
+    realised_pnl_24h = db.realised_pnl_since(24)
+
+    asset_classes = {db.agent_asset_class(a) for a in agents}
+    regime_lines = []
+    for ac in sorted(asset_classes):
+        row = db.latest_regime(ac)
+        if row:
+            regime_lines.append(telegram_client.regime_line(ac.capitalize(), row["score"], row["regime"]))
+
+    agents_data = []
+    for a in agents:
+        agent_positions = []
+        for p in positions:
+            if p["agent_name"] != a["name"]:
+                continue
+            entry = float(p["avg_entry_price"] or 0)
+            last = float(p["last_price"] or entry)
+            pnl_pct = ((last - entry) / entry * 100) if entry else 0.0
+            agent_positions.append({"symbol": p["symbol"], "pnl_pct": pnl_pct})
+        agents_data.append({
+            "name": a["name"],
+            "balance": float(a["current_balance"]),
+            "positions": agent_positions,
+        })
+
+    return total_now, total_24h_ago, buys, sells, realised_pnl_24h, regime_lines, agents_data
+
+
+def daily_summary():
+    """Fires once a day via a cron job, timed to the owner's own active-hours
+    config rather than a fixed clock time."""
+    try:
+        telegram_client.notify_daily_summary(*_status_snapshot())
+    except Exception as e:
+        log.error(f"daily summary failed: {e}")
+
+
+def _live_status_snapshot():
+    """Data for an on-demand /status reply - framed around performance since
+    this run started and what's held right now, not a rolling 24h window."""
+    agents = db.list_active_agents()
+    positions = db.list_open_positions()
+
+    held_value = sum(
+        float(p["qty"]) * float(p["last_price"] or p["avg_entry_price"] or 0)
+        for p in positions
+    )
+    pool_balance = float(db.get_pool_balance())
+    total_now = sum(float(a["current_balance"]) for a in agents) + pool_balance + held_value
+    total_at_start = db.equity_total_at_earliest()
+
+    asset_classes = {db.agent_asset_class(a) for a in agents}
+    regime_lines = []
+    for ac in sorted(asset_classes):
+        row = db.latest_regime(ac)
+        if row:
+            regime_lines.append(telegram_client.regime_line(ac.capitalize(), row["score"], row["regime"]))
+
+    agents_data = []
+    for a in agents:
+        agent_positions = []
+        invested = 0.0
+        for p in positions:
+            if p["agent_name"] != a["name"]:
+                continue
+            entry = float(p["avg_entry_price"] or 0)
+            last = float(p["last_price"] or entry)
+            qty = float(p["qty"])
+            pnl_pct = ((last - entry) / entry * 100) if entry else 0.0
+            pnl_dollar = (last - entry) * qty if entry else 0.0
+            agent_positions.append({"symbol": p["symbol"], "pnl_pct": pnl_pct, "pnl_dollar": pnl_dollar})
+            invested += qty * last
+        agents_data.append({
+            "name": a["name"],
+            "cash": float(a["current_balance"]),
+            "invested": invested,
+            "positions": agent_positions,
+        })
+
+    return total_now, total_at_start, pool_balance, regime_lines, agents_data
+
+
+def poll_telegram_commands():
+    """Checks for a /status message and replies with a live snapshot - a
+    check-in you can trigger any time, not a copy of the scheduled daily
+    digest. Only ever replies to the one configured chat_id; a message from
+    anyone else is silently ignored."""
+    try:
+        for chat_id, text in telegram_client.get_updates():
+            if chat_id != telegram_client.CHAT_ID:
+                continue
+            command = text.strip().split()[0].split("@")[0].lower() if text.strip() else ""
+            if command == "/status":
+                telegram_client.notify_status(*_live_status_snapshot())
+    except Exception as e:
+        log.error(f"telegram command poll failed: {e}")
+
+
 if __name__ == "__main__":
     cfg = tier_config.load()
     db.ensure_usage_table()
@@ -677,17 +1033,36 @@ if __name__ == "__main__":
     db.ensure_decisions_table()
     db.ensure_shortlist_cache_table()
     bootstrap()
-    scheduler = BackgroundScheduler()
+    # Without this, APScheduler's own internal clock defaults to UTC - the log
+    # LINE prefix would say AEST (via _BrisbaneFormatter above) while anything
+    # APScheduler prints itself, like "next run at: ... UTC" inside a job
+    # message, stays in UTC. Same mismatch fixed at its actual source instead
+    # of two clocks disagreeing in the same line.
+    scheduler = BackgroundScheduler(timezone="Australia/Brisbane")
+    # The scheduler now has an explicit timezone (AEST), so a NAIVE datetime
+    # passed as next_run_time gets localized as if it were already AEST rather
+    # than treated as UTC - and the container's system clock is UTC, so
+    # datetime.now() here would silently be read as 10 hours in the past,
+    # every restart. Must be timezone-aware to mean what it says: right now.
+    right_now = datetime.now(ZoneInfo("Australia/Brisbane"))
     scheduler.add_job(sync_orders, "interval", seconds=cfg["order_sync_interval_seconds"],
-                       next_run_time=datetime.now())
+                       next_run_time=right_now)
     scheduler.add_job(reconcile, "interval", seconds=cfg["reconcile_interval_seconds"])
     scheduler.add_job(enforce_exits, "interval", seconds=cfg["exit_check_interval_seconds"],
-                       next_run_time=datetime.now())
+                       next_run_time=right_now)
     scheduler.add_job(refresh_regime, "interval", seconds=cfg["regime_refresh_seconds"],
-                       next_run_time=datetime.now())
+                       next_run_time=right_now)
     scheduler.add_job(sync_api_costs, "interval", seconds=cfg["cost_sync_interval_seconds"],
-                       next_run_time=datetime.now())
+                       next_run_time=right_now)
     scheduler.add_job(run_discovery_scan, "interval", seconds=cfg["discovery_interval_seconds"],
-                       next_run_time=datetime.now())  # also fire immediately on startup, not just after the first interval
+                       next_run_time=right_now)  # also fire immediately on startup, not just after the first interval
+    # Once a day, right as the owner's active hours end - reuses the same
+    # timezone/hour config crypto pacing already uses, so it lands as he's
+    # wrapping up rather than at an arbitrary clock time.
+    scheduler.add_job(daily_summary, "cron", hour=cfg["crypto_active_end_hour"], minute=0,
+                       timezone=cfg["crypto_timezone"])
+    # Long-polls Telegram for a /status message every ~15s (each call itself
+    # waits up to 10s for one to arrive, so this isn't hammering the API).
+    scheduler.add_job(poll_telegram_commands, "interval", seconds=15, next_run_time=right_now)
     scheduler.start()
     app.run(host="0.0.0.0", port=8080)

@@ -54,13 +54,13 @@ DEFAULTS = {
     "cycle_weekday_seconds": 600,
     "cycle_weekend_seconds": 3600,
 
-    # --- pacing: crypto trades 24/7, so YOUR waking hours define "active"
-    #     rather than an exchange bell. Outside these hours it idles cheaply.
+    # --- pacing: crypto trades 24/7, so it thinks on the same cadence around
+    #     the clock - no owner-waking-hours gating any more. crypto_timezone
+    #     and crypto_active_end_hour are now only used to time the once-daily
+    #     Telegram summary, not to decide whether to think.
     "crypto_timezone": "Australia/Brisbane",
-    "crypto_active_start_hour": 7,     # 7am local
-    "crypto_active_end_hour": 22,      # 10pm local
+    "crypto_active_end_hour": 22,      # 10pm local - daily summary fires here
     "cycle_crypto_active_seconds": 120,
-    "cycle_crypto_quiet_seconds": 1800,
 
     # Real spend, pulled from Anthropic's Usage & Cost Admin API when an admin
     # key is available. Anthropic bills in USD, so AUD needs a conversion rate.

@@ -57,61 +57,50 @@ def _fetch_history(symbol, asset_class, days=260):
     return bars.get(symbol, [])
 
 
-def compute(asset_class="crypto"):
-    anchor = CRYPTO_ANCHOR if asset_class == "crypto" else STOCK_ANCHOR
+def score_from_closes(anchor, anchor_closes, universe_closes):
+    """The actual scoring rule - pure arithmetic, no network calls. Both the
+    live Controller (via compute() below) and the backtester call this exact
+    function, so a backtest result can never silently measure different math
+    than what runs live.
+
+    anchor_closes: daily closes for the anchor symbol, oldest first.
+    universe_closes: {symbol: [closes]} for the breadth check, same order.
+    An empty/partial universe degrades to a neutral breadth score (12) rather
+    than raising - this mirrors what compute() already did when the breadth
+    fetch itself failed."""
     components = {}
 
-    try:
-        closes = _closes(_fetch_history(anchor, asset_class))
-    except Exception as e:
-        log.error(f"regime: could not fetch {anchor} history: {e}")
+    if len(anchor_closes) < 60:
         return {"score": 50, "regime": "unknown", "components": {},
-                "note": f"could not read {anchor}, defaulting to neutral"}
+                "note": f"only {len(anchor_closes)} bars of {anchor}, need 60+"}
 
-    if len(closes) < 60:
-        return {"score": 50, "regime": "unknown", "components": {},
-                "note": f"only {len(closes)} bars of {anchor}, need 60+"}
+    price = anchor_closes[-1]
 
-    price = closes[-1]
-
-    sma200 = _sma(closes, 200)
-    sma200_prev = _sma(closes[:-20], 200) if len(closes) >= 220 else None
+    sma200 = _sma(anchor_closes, 200)
+    sma200_prev = _sma(anchor_closes[:-20], 200) if len(anchor_closes) >= 220 else None
     rising200 = (sma200 is not None and sma200_prev is not None and sma200 > sma200_prev)
     components["anchor_vs_200d"] = _score_vs_average(price, sma200, rising200)
 
-    sma50 = _sma(closes, 50)
-    sma50_prev = _sma(closes[:-10], 50) if len(closes) >= 60 else None
+    sma50 = _sma(anchor_closes, 50)
+    sma50_prev = _sma(anchor_closes[:-10], 50) if len(anchor_closes) >= 60 else None
     rising50 = (sma50 is not None and sma50_prev is not None and sma50 > sma50_prev)
     components["anchor_vs_50d"] = _score_vs_average(price, sma50, rising50)
 
     # Breadth: an anchor holding up while everything else falls is a narrow,
     # fragile market. The anchor alone cannot show that.
-    try:
-        if asset_class == "crypto":
-            universe = major_coins.tradable_universe()
-            all_bars = alpaca_client.get_crypto_batch_bars(universe, lookback_days=60)
-        else:
-            import safe_universe
-            universe = safe_universe.SAFE_UNIVERSE
-            all_bars = alpaca_client.get_batch_bars(universe, lookback_days=60)
+    above, total = 0, 0
+    for sym, c in universe_closes.items():
+        avg = _sma(c, 50)
+        if avg:
+            total += 1
+            if c[-1] > avg:
+                above += 1
+    pct = (above / total) if total else 0.5
+    components["breadth"] = round(pct * 25)
+    components["_breadth_detail"] = f"{above}/{total} above their 50-day average"
 
-        above, total = 0, 0
-        for sym in universe:
-            c = _closes(all_bars.get(sym) or [])
-            avg = _sma(c, 50)
-            if avg:
-                total += 1
-                if c[-1] > avg:
-                    above += 1
-        pct = (above / total) if total else 0.5
-        components["breadth"] = round(pct * 25)
-        components["_breadth_detail"] = f"{above}/{total} above their 50-day average"
-    except Exception as e:
-        log.warning(f"regime: breadth check failed ({e}), scoring neutral")
-        components["breadth"] = 12
-
-    if len(closes) >= 21:
-        change = (closes[-1] - closes[-21]) / closes[-21] * 100
+    if len(anchor_closes) >= 21:
+        change = (anchor_closes[-1] - anchor_closes[-21]) / anchor_closes[-21] * 100
         components["momentum_20d"] = 25 if change > 10 else 18 if change > 0 else 8 if change > -10 else 0
         components["_momentum_detail"] = f"{anchor} {change:+.1f}% over 20 days"
     else:
@@ -120,6 +109,33 @@ def compute(asset_class="crypto"):
     score = sum(v for k, v in components.items() if not k.startswith("_"))
     return {"score": score, "regime": label_for(score), "components": components,
             "anchor": anchor, "anchor_price": round(price, 4)}
+
+
+def compute(asset_class="crypto"):
+    """Live wrapper: fetches current bars, then hands off to score_from_closes()."""
+    anchor = CRYPTO_ANCHOR if asset_class == "crypto" else STOCK_ANCHOR
+
+    try:
+        anchor_closes = _closes(_fetch_history(anchor, asset_class))
+    except Exception as e:
+        log.error(f"regime: could not fetch {anchor} history: {e}")
+        return {"score": 50, "regime": "unknown", "components": {},
+                "note": f"could not read {anchor}, defaulting to neutral"}
+
+    universe_closes = {}
+    try:
+        if asset_class == "crypto":
+            universe = major_coins.tradable_universe()
+            all_bars = alpaca_client.get_crypto_batch_bars(universe, lookback_days=60)
+        else:
+            import safe_universe
+            universe = safe_universe.SAFE_UNIVERSE
+            all_bars = alpaca_client.get_batch_bars(universe, lookback_days=60)
+        universe_closes = {sym: _closes(all_bars.get(sym) or []) for sym in universe}
+    except Exception as e:
+        log.warning(f"regime: breadth fetch failed ({e}), scoring neutral")
+
+    return score_from_closes(anchor, anchor_closes, universe_closes)
 
 
 def label_for(score, cfg=None):

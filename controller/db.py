@@ -327,6 +327,106 @@ def record_equity_snapshot(agent_id, cash, invested):
         )
 
 
+def get_position(agent_id, symbol):
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM positions WHERE agent_id = %s AND symbol = %s", (agent_id, symbol))
+        return cur.fetchone()
+
+
+# Same Sonnet 5 pricing the dashboard uses for its token-based estimate
+# (dashboard/dashboard.py's USD_PER_MTOK_* constants) - kept here too since
+# the Controller and dashboard are separate containers with no shared module.
+# Update both places if the agents' model ever changes.
+_USD_PER_MTOK_INPUT = 2.00
+_USD_PER_MTOK_OUTPUT = 10.00
+_USD_PER_MTOK_CACHE_READ = 0.20
+_USD_PER_MTOK_CACHE_WRITE = 2.50
+
+
+def actual_cost_since(hours=168):
+    """Real billed USD cost if the Admin API has been populating api_costs,
+    else a token-based estimate at current model pricing - same fallback the
+    dashboard already shows, just usable here too so the cost-vs-profit
+    breaker doesn't depend on the dashboard being open. Returns (cost, is_real)."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COALESCE(SUM(usd), 0) FROM api_costs
+            WHERE day >= CURRENT_DATE - (%s || ' hours')::interval
+        """, (hours,))
+        real = float(cur.fetchone()[0])
+        if real > 0:
+            return real, True
+
+        cur.execute("""
+            SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+                   COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0)
+            FROM api_usage WHERE created_at >= now() - (%s || ' hours')::interval
+        """, (hours,))
+        inp, outp, cr, cc = cur.fetchone()
+        est = (float(inp) / 1e6 * _USD_PER_MTOK_INPUT + float(outp) / 1e6 * _USD_PER_MTOK_OUTPUT
+               + float(cr) / 1e6 * _USD_PER_MTOK_CACHE_READ + float(cc) / 1e6 * _USD_PER_MTOK_CACHE_WRITE)
+        return est, False
+
+
+def realised_pnl_since(hours=24):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COALESCE(SUM(amount), 0) FROM capital_events
+            WHERE event_type = 'realised_pnl' AND created_at >= now() - (%s || ' hours')::interval
+        """, (hours,))
+        return float(cur.fetchone()[0])
+
+
+def equity_total_at_earliest():
+    """Sum of each active agent's very FIRST equity snapshot - the closest
+    thing to 'since this run started', since a ledger reset truncates
+    equity_snapshots along with everything else. An agent spawned partway
+    through counts from its own first snapshot, not the whole system's."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COALESCE(SUM(total), 0) FROM (
+                SELECT DISTINCT ON (agent_id) agent_id, total
+                FROM equity_snapshots
+                ORDER BY agent_id, taken_at ASC
+            ) earliest
+        """)
+        return float(cur.fetchone()[0])
+
+
+def equity_total_hours_ago(hours=24):
+    """Sum of each active agent's most recent equity snapshot taken at or before
+    `hours` ago - the closest thing to 'what the whole desk was worth back then'
+    without a snapshot landing on an exact boundary. An agent with no snapshot
+    that old yet (e.g. spawned since) is left out rather than guessed at."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COALESCE(SUM(total), 0) FROM (
+                SELECT DISTINCT ON (agent_id) agent_id, total
+                FROM equity_snapshots
+                WHERE taken_at <= now() - (%s || ' hours')::interval
+                ORDER BY agent_id, taken_at DESC
+            ) recent
+        """, (hours,))
+        return float(cur.fetchone()[0])
+
+
+def trade_counts_since(hours=24):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT side, COUNT(*) FROM trades
+            WHERE status = 'filled' AND filled_at >= now() - (%s || ' hours')::interval
+            GROUP BY side
+        """, (hours,))
+        counts = dict(cur.fetchall())
+        return counts.get("buy", 0), counts.get("sell", 0)
+
+
 def prune_equity_snapshots(keep_days=60):
     with get_conn() as conn:
         cur = conn.cursor()
@@ -470,6 +570,22 @@ def update_high_water_mark(agent_id, symbol, price):
         """, (price, agent_id, symbol, price))
 
 
+def set_position_qty(agent_id, symbol, qty):
+    """Directly overwrites a position's recorded quantity - for truing the
+    ledger up to what the broker actually holds, not for a normal fill (that's
+    apply_fill_to_position, which adjusts by a delta and tracks cost basis).
+    qty <= 0 removes the row entirely, same as a sell that closes a position."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        if qty <= 0.0001:
+            cur.execute("DELETE FROM positions WHERE agent_id = %s AND symbol = %s", (agent_id, symbol))
+        else:
+            cur.execute(
+                "UPDATE positions SET qty = %s, updated_at = now() WHERE agent_id = %s AND symbol = %s",
+                (qty, agent_id, symbol),
+            )
+
+
 def update_position_price(agent_id, symbol, price):
     """Piggybacks on the price the exit checker already fetches every 60s, so the
     dashboard can show live gain/loss without holding broker credentials itself."""
@@ -611,6 +727,27 @@ def save_shortlist(shortlist_dict):
                        updated_at = now()""",
                 (sym, data.get("price"), pct),
             )
+
+
+def spawn_from_pool_transaction(child_name, amount, strategy, min_capital, max_capital):
+    """A new agent funded directly by the unallocated pool - not a sibling debited
+    from any existing agent's own trading balance. parent_name is NULL: this
+    capital didn't come from another agent proving itself, it came from cash
+    that was sitting idle. Caller still owns decrementing and persisting the
+    pool's own balance via set_pool_balance() in the same reconcile pass."""
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """INSERT INTO agents (name, parent_name, strategy, current_balance, min_capital, max_capital)
+               VALUES (%s, NULL, %s, %s, %s, %s) RETURNING *""",
+            (child_name, psycopg2.extras.Json(strategy), amount, min_capital, max_capital),
+        )
+        child = cur.fetchone()
+        cur.execute(
+            "INSERT INTO capital_events (agent_id, event_type, amount, note) VALUES (%s, 'pool_allocation', %s, %s)",
+            (child["id"], amount, "new agent funded from unallocated pool"),
+        )
+        return child
 
 
 def spawn_sibling_transaction(parent_name, child_name, amount, strategy):

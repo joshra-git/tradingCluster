@@ -387,53 +387,49 @@ def screen_crypto(lookback_days=5, top_n=5):
     return {x["symbol"]: x for x in unique[:top_n]}
 
 
+def _ledger_symbol(broker_symbol):
+    """Alpaca's crypto positions come back as 'ADAUSD' - no separator. Every
+    ledger table uses 'ADA/USD'. Stocks (e.g. 'AAPL') pass through unchanged."""
+    if broker_symbol.endswith("USD") and len(broker_symbol) > 3:
+        return f"{broker_symbol[:-3]}/{broker_symbol[-3:]}"
+    return broker_symbol
+
+
 def broker_position_prices():
-    """The broker's own consolidated price for everything we hold. IEX quotes
-    (what get_latest_price uses) come from a single small exchange and were
-    running 12-20% above reality on thin names - which inflated trailing-stop
-    high-water marks and made stops fire at the wrong level."""
+    """The broker's own consolidated price for everything we hold, keyed by
+    ledger-format symbol. IEX quotes (what get_latest_price uses) come from a
+    single small exchange and were running 12-20% above reality on thin names
+    - which inflated trailing-stop high-water marks and made stops fire at
+    the wrong level. NOTE: this dict was previously keyed by the broker's raw
+    symbol ('ADAUSD') while every caller looked it up by ledger symbol
+    ('ADA/USD') - a guaranteed miss that silently meant this function never
+    actually got used, and every exit fell back to the single-exchange price
+    it was written to avoid."""
     out = {}
     try:
         for p in trading_client.get_all_positions():
             if p.current_price:
-                out[p.symbol] = float(p.current_price)
+                out[_ledger_symbol(p.symbol)] = float(p.current_price)
     except Exception as e:
         log.error(f"could not read broker position prices: {e}")
     return out
 
 
+def broker_position_qtys():
+    """Ledger-format symbol -> actual qty currently held at the broker. Used
+    to true up the ledger when a position was closed (or partially drifted)
+    outside the Controller - see reconcile_position_qty() in app.py."""
+    out = {}
+    try:
+        for p in trading_client.get_all_positions():
+            out[_ledger_symbol(p.symbol)] = float(p.qty)
+    except Exception as e:
+        log.error(f"could not read broker positions: {e}")
+    return out
+
+
 def price_for(symbol, asset_class):
     return get_crypto_price(symbol) if asset_class == "crypto" else get_latest_price(symbol)
-
-
-def get_crypto_24h_stats(symbol):
-    """Rolling 24-hour context for a crypto pair.
-    Returns None on failure so the guardrail fails open."""
-    try:
-        req = CryptoBarsRequest(
-            symbol_or_symbols=symbol,
-            timeframe=TimeFrame.Hour,
-            start=datetime.now() - timedelta(hours=26),
-        )
-        bars = crypto_data_client.get_crypto_bars(req)[symbol][-24:]
-        if len(bars) < 2:
-            return None
-        high_24h = max(float(b.high) for b in bars)
-        low_24h = min(float(b.low) for b in bars)
-        open_24h = float(bars[0].open)
-        current = get_crypto_price(symbol)
-        change_pct = (current - open_24h) / open_24h * 100 if open_24h else 0
-        pullback_pct = (high_24h - current) / high_24h * 100 if high_24h else 0
-        return {
-            "current": current,
-            "high_24h": high_24h,
-            "low_24h": low_24h,
-            "change_24h_pct": round(change_pct, 2),
-            "pullback_from_high_pct": round(pullback_pct, 2),
-        }
-    except Exception as e:
-        log.warning(f"could not fetch 24h stats for {symbol}: {e}")
-        return None
 
 
 def get_crypto_24h_stats(symbol):
