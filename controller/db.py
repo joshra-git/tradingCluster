@@ -777,3 +777,38 @@ def spawn_sibling_transaction(parent_name, child_name, amount, strategy):
         cur.execute("INSERT INTO capital_events (agent_id, event_type, amount) VALUES (%s, 'spawn_credit', %s)",
                     (child["id"], amount))
         return child
+
+
+def ensure_telegram_state_table():
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS telegram_state (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                last_update_id BIGINT,
+                CHECK (id = 1)
+            )
+        """)
+
+
+def get_telegram_offset():
+    """The last Telegram update_id we've already handled, persisted so an
+    ordinary code redeploy doesn't reset it. Without this, every restart's
+    module-level _last_update_id = None looked identical to a genuinely
+    fresh bot, so get_updates() drained and silently discarded any /status
+    sent in the gap around a routine redeploy - not just a real first start."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT last_update_id FROM telegram_state WHERE id = 1")
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def set_telegram_offset(value):
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO telegram_state (id, last_update_id) VALUES (1, %s)
+               ON CONFLICT (id) DO UPDATE SET last_update_id = EXCLUDED.last_update_id"""
+            , (value,)
+        )

@@ -21,25 +21,31 @@ MAJOR_COINS = [
     "LTC/USD",
     "BCH/USD",
     "UNI/USD",
-    "MATIC/USD",
     "AAVE/USD",
-    "ATOM/USD",
-    "ALGO/USD",
     "SHIB/USD",
     "CRV/USD",
-    "MKR/USD",
     "GRT/USD",
-    "NEAR/USD",
     "ARB/USD",
-    "OP/USD",
-    "INJ/USD",
-    "SUI/USD",
-    "APT/USD",
     "FIL/USD",
     "XTZ/USD",
-    "SAND/USD",
-    "MANA/USD",
+    # --- added: confirmed tradable with deep historical bars (>200 daily
+    # bars each as of 2026-09-22, no thin/spun-up-then-dead listings) ---
+    "POL/USD",      # Polygon's current token; replaces the old MATIC/USD
+                     # listing below, which Alpaca no longer trades
+    "SKY/USD",       # MakerDAO's rebrand; replaces the old MKR/USD listing
+    "BAT/USD",
+    "LDO/USD",
+    "SUSHI/USD",
+    "YFI/USD",
+    "RENDER/USD",
 ]
+
+# Pruned as of 2026-09-22 (confirmed untradable on Alpaca via zero-bar
+# historical fetch, per the backtester's own discovery of this - see
+# CLAUDE.md's "Known gaps" #12): MATIC/USD (Polygon rebranded to POL, added
+# above), MKR/USD (MakerDAO rebranded to SKY, added above), ATOM/USD,
+# ALGO/USD, NEAR/USD, OP/USD, INJ/USD, SUI/USD, APT/USD, SAND/USD, MANA/USD.
+# Re-add if Alpaca ever re-lists one - check with tradable_universe() first.
 
 _TRADABLE_CACHE = None
 

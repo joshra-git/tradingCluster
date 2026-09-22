@@ -43,7 +43,13 @@ anything is actually sent to Alpaca:
 - **Crypto dip-buy guardrail** — crypto-only: won't buy something already up
   more than a configured % in the last 24 hours unless it's pulled back at
   least a little from that high. The point is entering on a pullback, not at
-  the peak.
+  the peak. Pre-filtered out of the shortlist too, before Claude even sees
+  it — see "Trading only when it's worth paying for" below for why.
+- **Cost-vs-profit circuit breaker, live accounts only** — if trailing 7-day
+  Claude spend has run ahead of trailing 7-day *realised* profit, new
+  positions are blocked until that turns around. Paper is explicitly exempt;
+  testing at a net cost while tuning the balance is fine. Nothing already
+  held is ever touched by this.
 
 Claude decides *what* to do. This layer decides *whether it's allowed to*.
 That split is deliberate — an LLM should never be the last line of defense
@@ -88,6 +94,17 @@ depends on an API call succeeding isn't really a stop-loss. Claude can still
 choose to sell earlier for its own reasons; this is just the backstop that
 always fires regardless.
 
+**Crypto also has a profit-lock ratchet on top of the trailing stop.** A wide
+stop is fine while a position is only marginally up — that's normal noise —
+but on a small account, giving back a wide percentage of an already-real
+dollar gain can wipe most of it out before the stop ever fires. Once a
+position's peak unrealised profit crosses `crypto_profit_lock_trigger_usd`
+(default $5), it switches to a much tighter trailing distance
+(`crypto_profit_lock_stop_pct`, default 4%) for the rest of its life, so a
+real win gets protected instead of given back to the same wide band that
+tolerated the climb. It's a ratchet, not a flat take-profit — small
+positions still get room to breathe, real gains get locked in hard.
+
 ## The market regime brake
 
 A momentum strategy buys things going up. In a broad downtrend most things go
@@ -124,12 +141,13 @@ because "market hours" doesn't mean anything for crypto.
 is open, once every 10 minutes pre-market/after-hours/weekday-closed, and
 once an hour on weekends.
 
-**Crypto never closes**, so instead of a session it follows *the owner's own
-waking hours* (Brisbane time, configurable) — a check every 2 minutes while
-he's awake and could plausibly be watching, dropping to once every 30 minutes
-overnight. This is the actual point of running crypto at all: trading happens
-while someone is awake to see it, instead of overnight in a US session no one
-in Brisbane is up for.
+**Crypto never closes, and — as of this pass — no longer paces to the owner's
+waking hours either.** It used to slow to once every 30 minutes overnight,
+specifically so trading happened while someone was awake to watch it. That
+reasoning got weaker once push notifications (below) made "seeing it happen"
+available any time, and the owner explicitly chose round-the-clock pacing
+over keeping the quiet-hours gate, knowing it costs more to run. The
+cost-vs-profit breaker above exists to guard the other side of that trade.
 
 On top of that base pacing:
 
@@ -137,15 +155,26 @@ On top of that base pacing:
   entry is time-sensitive. An agent that's already fully invested has nothing
   to decide (the trailing stop handles exits without any model call), so it
   slows down to an occasional check-in whose only purpose is letting Claude
-  bail out early for a judgement reason. This is the single biggest lever on
-  cost: without it, running this system would cost more per week than the
-  profit target it's chasing.
+  bail out early for a judgement reason.
+- **A cheap pre-filter runs before every paid call.** Even on a hunting
+  cycle, the agent asks in plain Python first: did a held position cross a
+  profit/loss threshold worth a judgement call, has the shortlist actually
+  moved, or did the *previous* cycle genuinely execute a trade? A proposal
+  that got *rejected* used to count the same as one that executed, which
+  meant a candidate the risk layer kept blocking (already up too much in
+  24h, say) would force a fresh paid call every single cycle to ask the same
+  question and get the same answer — one incident burned roughly two-thirds
+  of a day's calls this way before being caught. Fixed by only counting an
+  actually-executed trade as "something changed." The same rejection reason
+  is now also pre-filtered out of the shortlist itself, so Claude never sees
+  a candidate that's guaranteed to be turned down.
 - **A daily call budget** across all agents acts as a hard circuit breaker —
   originally sized around a free-tier limit, it's now kept specifically so a
   crash-looping agent can't run up a real bill overnight.
-
-Together this runs at roughly tens of model calls per agent per week rather
-than thousands.
+- **The cost-vs-profit breaker** (see above) is the newest and most direct
+  lever: on a live account specifically, it stops opening new positions the
+  moment trailing spend outruns trailing realised profit, rather than
+  trusting call-count pacing alone to keep the two in a sane relationship.
 
 ## What gets remembered
 
@@ -196,6 +225,19 @@ clocks (so you can see trading windows at a glance, not just guess), current
 market session, every agent's balance and tier, and a live feed of trades
 with full reasoning attached.
 
+## Push notifications, so you don't have to keep checking
+
+An optional Telegram bot (no cost, your own bot token) sends a plain-English
+message the moment money actually moves — a buy with the cost and the
+stop-loss price, a sell with the $/% gain or loss and why it happened, in the
+same no-jargon voice as everything else the system explains. A once-daily
+digest covers the last 24 hours; sending `/status` any time gets a live
+snapshot back instead — everything currently held, its return right now, and
+total performance since the system was last reset — without waiting for the
+scheduled digest or opening the dashboard. It only ever replies to the one
+chat you configured; a stray message from anyone else who found the bot is
+silently ignored.
+
 ## Paper vs. live
 
 The Controller reads a single `ALPACA_PAPER` flag to decide which Alpaca
@@ -207,16 +249,34 @@ is no separate live manifest set yet, so doing that today means changing the
 flag and secrets on the one deployment that exists, deliberately, not
 something to do by accident.
 
+## The backtester
+
+A standalone replay of the deterministic half of this system — momentum
+ranking, the market regime brake, position sizing, exits — against real
+historical Alpaca price data. Lives in `backtester/`, runs entirely outside
+Kubernetes (no cluster, no Postgres, no broker credentials), and reuses the
+exact same ranking and regime-scoring functions the live Controller calls, so
+a backtest result can't quietly measure different logic than what's actually
+running.
+
+It deliberately does **not** replay Claude's own judgement — that would cost
+real API money per historical run and wouldn't even give a repeatable answer.
+It stands in a simple, dumb rule instead, purely to test whether the
+mechanical rules underneath Claude have any edge on their own. Already
+useful for exactly what it's for: a stop-loss distance that looked like a
+clear win on one 60-day window turned out to be one lucky window carrying the
+average once tested across four; the market regime brake, by contrast, won
+in every one of those four windows.
+
+Known limits, not hidden: no fees or slippage modeled yet (the most common
+reason a backtest looks better than live trading ever will), and the trailing
+stop is approximated from daily highs/lows rather than a true 60-second
+replay.
+
 ## Open ideas, discussed but not yet built
 
 Roughly in priority order:
 
-- **No backtester, and this is the highest-value gap.** Everything in this
-  system — the scanning, ranking, and exit logic — is deterministic and
-  Alpaca provides 7+ years of historical bars, so a replay would cost almost
-  nothing in model calls and could answer in an afternoon what live running
-  takes months to reveal. Right now every rule in this document is a
-  hypothesis, not a validated one.
 - **No self-healing for missing agent pods.** If an agent's Kubernetes
   Deployment gets deleted, the ledger still lists it as active but nothing
   recreates the pod — this has caused real confusion more than once.
@@ -236,6 +296,14 @@ Roughly in priority order:
   volume, no news/sentiment, no broader technical indicators. Claude has
   repeatedly and correctly said it wants more signal than this before
   committing capital confidently.
+- **A third of the crypto watchlist isn't actually tradable on Alpaca** — 10
+  of the 30 coins in `major_coins.py` return no data at all when the
+  backtester tries to fetch their history. Harmless for live trading (already
+  filtered out before anything is proposed), just dead weight worth pruning.
+- **A weekly spending ceiling was named but never wired up.**
+  `weekly_cost_target_aud` sits in config unused — a fixed absolute cap,
+  distinct from the cost-vs-profit breaker above (which is relative to actual
+  performance, not a flat number). Discussed, deliberately deferred.
 
 # Technical architecture
 
@@ -274,6 +342,10 @@ credentials, distinguished by an `ALPACA_PAPER` flag on the Controller.
 - `trading-secrets` (Secret) holds the Alpaca key pair, the Anthropic key,
   and the Postgres password. Only the Controller gets the Alpaca and
   Anthropic keys; Postgres and the dashboard get only the DB password.
+  An optional Anthropic Admin key (real billed-cost tracking) and optional
+  Telegram bot token + chat ID (push notifications) live here too — all
+  `optional: true` in the Deployment spec, so a missing one degrades
+  gracefully instead of crashing the pod.
 
 ## Networking
 
@@ -485,7 +557,7 @@ cp k8s/01-secrets.example.yaml k8s/01-secrets.yaml
 nano k8s/01-secrets.yaml
 ```
 
-Fill in the four values:
+Fill in the four required values:
 
 ```yaml
   ALPACA_API_KEY: "your paper key"
@@ -496,6 +568,11 @@ Fill in the four values:
 
 `POSTGRES_PASSWORD` is internal to your cluster — it isn't registered anywhere,
 just pick something.
+
+Two more fields in the same file are optional — leave them blank to skip:
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` for push notifications (message
+`@BotFather` on Telegram to create a bot and get a token; the file has the
+full steps). Nothing breaks without them, notifications just stay off.
 
 **Before you commit anything to git:**
 

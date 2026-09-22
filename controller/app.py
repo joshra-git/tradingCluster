@@ -546,6 +546,31 @@ def _reconcile_position_qty(pos, agent_row, pos_asset_class, broker_qtys):
     return actual_qty
 
 
+def compute_stop(entry, price, qty, hwm, stop_loss_pct_override, pos_asset_class, cfg):
+    """The actual stop-price math, shared between enforce_exits() (which acts
+    on it) and the /status snapshot (which only displays it) - so what a
+    Telegram reply shows can never drift from what will really trigger a
+    sell, the same reasoning as _auto_exit_cause() not re-deriving its text.
+    Returns (stop_price, stop_pct, profit_locked)."""
+    if pos_asset_class == "crypto":
+        default_stop = cfg["crypto_stop_loss_pct"]
+    else:
+        default_stop = cfg["default_stop_loss_pct"]
+    stop_pct = float(stop_loss_pct_override or default_stop)
+
+    if not cfg["trailing_stop_enabled"]:
+        return entry * (1 - stop_pct / 100), stop_pct, False
+
+    hwm = max(hwm, entry, price)
+    profit_locked = False
+    if pos_asset_class == "crypto":
+        peak_profit_usd = (hwm - entry) * qty
+        if peak_profit_usd >= cfg["crypto_profit_lock_trigger_usd"]:
+            stop_pct = cfg["crypto_profit_lock_stop_pct"]
+            profit_locked = True
+    return hwm * (1 - stop_pct / 100), stop_pct, profit_locked
+
+
 def enforce_exits():
     """Deterministic exit rules, run by the Controller every reconcile pass rather
     than waiting on an agent's next cycle or an LLM call succeeding. A stop-loss that
@@ -599,10 +624,14 @@ def enforce_exits():
             # actually turns over by stop_pct from its peak.
             db.update_high_water_mark(agent_row["id"] if agent_row else pos["agent_id"], symbol, price)
             hwm = max(float(pos["high_water_mark"] or 0), entry, price)
-            drop_from_peak = (price - hwm) / hwm * 100
-            if drop_from_peak <= -stop_pct:
+            stop_price, stop_pct, profit_locked = compute_stop(
+                entry, price, qty, hwm, pos["stop_loss_pct"], pos_asset_class, cfg
+            )
+            if price <= stop_price:
+                drop_from_peak = (price - hwm) / hwm * 100
                 gain = (hwm - entry) / entry * 100
-                reason = (f"trailing stop: fell {abs(drop_from_peak):.2f}% from its peak of "
+                label = "profit lock" if profit_locked else "trailing stop"
+                reason = (f"{label}: fell {abs(drop_from_peak):.2f}% from its peak of "
                           f"${hwm:,.4f} (which was {gain:+.1f}% above entry)")
         else:
             if change_pct <= -stop_pct:
@@ -964,6 +993,7 @@ def daily_summary():
 def _live_status_snapshot():
     """Data for an on-demand /status reply - framed around performance since
     this run started and what's held right now, not a rolling 24h window."""
+    cfg = tier_config.load()
     agents = db.list_active_agents()
     positions = db.list_open_positions()
 
@@ -984,6 +1014,7 @@ def _live_status_snapshot():
 
     agents_data = []
     for a in agents:
+        pos_asset_class = db.agent_asset_class(a)
         agent_positions = []
         invested = 0.0
         for p in positions:
@@ -992,9 +1023,18 @@ def _live_status_snapshot():
             entry = float(p["avg_entry_price"] or 0)
             last = float(p["last_price"] or entry)
             qty = float(p["qty"])
+            hwm = float(p["high_water_mark"] or 0)
             pnl_pct = ((last - entry) / entry * 100) if entry else 0.0
             pnl_dollar = (last - entry) * qty if entry else 0.0
-            agent_positions.append({"symbol": p["symbol"], "pnl_pct": pnl_pct, "pnl_dollar": pnl_dollar})
+            stop_price, stop_pct, profit_locked = compute_stop(
+                entry, last, qty, hwm, p["stop_loss_pct"], pos_asset_class, cfg
+            )
+            room_to_stop_pct = ((last - stop_price) / last * 100) if last else 0.0
+            agent_positions.append({
+                "symbol": p["symbol"], "pnl_pct": pnl_pct, "pnl_dollar": pnl_dollar,
+                "stop_price": stop_price, "stop_pct": stop_pct,
+                "room_to_stop_pct": room_to_stop_pct, "profit_locked": profit_locked,
+            })
             invested += qty * last
         agents_data.append({
             "name": a["name"],
@@ -1018,6 +1058,9 @@ def poll_telegram_commands():
             command = text.strip().split()[0].split("@")[0].lower() if text.strip() else ""
             if command == "/status":
                 telegram_client.notify_status(*_live_status_snapshot())
+        offset = telegram_client.get_last_update_id()
+        if offset is not None:
+            db.set_telegram_offset(offset)
     except Exception as e:
         log.error(f"telegram command poll failed: {e}")
 
@@ -1032,6 +1075,13 @@ if __name__ == "__main__":
     db.ensure_regime_table()
     db.ensure_decisions_table()
     db.ensure_shortlist_cache_table()
+    db.ensure_telegram_state_table()
+    saved_offset = db.get_telegram_offset()
+    if saved_offset is not None:
+        # Resume from where the last pod left off - a redeploy shouldn't
+        # look like a fresh bot start and silently swallow a command sent
+        # around the restart. See telegram_client.set_last_update_id().
+        telegram_client.set_last_update_id(saved_offset)
     bootstrap()
     # Without this, APScheduler's own internal clock defaults to UTC - the log
     # LINE prefix would say AEST (via _BrisbaneFormatter above) while anything
@@ -1061,8 +1111,13 @@ if __name__ == "__main__":
     # wrapping up rather than at an arbitrary clock time.
     scheduler.add_job(daily_summary, "cron", hour=cfg["crypto_active_end_hour"], minute=0,
                        timezone=cfg["crypto_timezone"])
-    # Long-polls Telegram for a /status message every ~15s (each call itself
-    # waits up to 10s for one to arrive, so this isn't hammering the API).
-    scheduler.add_job(poll_telegram_commands, "interval", seconds=15, next_run_time=right_now)
+    # Long-polls Telegram for commands. Interval must leave real margin over
+    # the long-poll timeout inside get_updates() (8s) - a normal call can
+    # legitimately take close to that long even with nothing wrong, and a
+    # 15s/10s split left almost none. Under a brief network hiccup one call
+    # ran long, and every following tick got skipped by APScheduler's
+    # max_instances=1 guard rather than queuing - stacking up for ~20 minutes
+    # before the next one finally got a turn. 25s/8s leaves real breathing room.
+    scheduler.add_job(poll_telegram_commands, "interval", seconds=25, next_run_time=right_now)
     scheduler.start()
     app.run(host="0.0.0.0", port=8080)

@@ -39,13 +39,25 @@ DEFAULTS = {
     "default_stop_loss_pct": 8.0,
     "crypto_stop_loss_pct": 12.0,      # crypto swings harder, so a wider stop
     "crypto_take_profit_pct": 20.0,
+    # Profit-lock ratchet: the wide 12% trail is fine while a position is only
+    # marginally up (that's normal noise, not worth selling into) but on a small
+    # account a 12% giveback of a real dollar gain feels much bigger than 12%
+    # sounds. Once a position's peak unrealised profit has ever crossed this
+    # many dollars, switch it to the tighter trail below so a real win doesn't
+    # mostly evaporate before the wide stop catches it. Triggers on peak profit,
+    # not current profit, so it doesn't flicker in and out once earned.
+    "crypto_profit_lock_trigger_usd": 5.0,
+    "crypto_profit_lock_stop_pct": 4.0,
 
     # --- discovery and screening ---
     "discovery_interval_seconds": 900,
     "min_price_floor": 5.0,
     "persistence_min_appearances": 2,
     "persistence_lookback": 3,
-    "screen_top_n": 5,
+    "screen_top_n": 8,     # widened alongside the major_coins.py expansion -
+                            # a wider universe with the same top-5 cutoff would
+                            # still just show the same handful of biggest
+                            # movers every cycle
     "trend_window_days": 5,
 
     # --- pacing: stocks follow the US market session ---

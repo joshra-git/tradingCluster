@@ -24,7 +24,20 @@ IS_PAPER = os.environ.get("ALPACA_PAPER", "true").lower() == "true"
 _last_update_id = None
 
 
-def get_updates(timeout=10):
+def get_last_update_id():
+    return _last_update_id
+
+
+def set_last_update_id(value):
+    """Called once at Controller startup to resume from a persisted offset
+    (see db.get_telegram_offset()) instead of always starting fresh - a
+    redeploy is not the same event as the bot's actual first-ever start,
+    and only the latter should drain-and-discard any backlog."""
+    global _last_update_id
+    _last_update_id = value
+
+
+def get_updates(timeout=8):
     """Long-polls Telegram for messages sent TO the bot since the last call,
     returning [(chat_id, text), ...] with chat_id as a string so it compares
     cleanly against CHAT_ID (Telegram's API returns it as a JSON int, CHAT_ID
@@ -43,9 +56,12 @@ def get_updates(timeout=10):
         params["offset"] = _last_update_id + 1
 
     try:
+        # (connect, read) explicitly, not a single combined value - a DNS/
+        # connection-phase hang should fail fast (5s) rather than eating into
+        # the same budget as Telegram's own long-poll wait.
         resp = requests.get(
             f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
-            params=params, timeout=timeout + 10,
+            params=params, timeout=(5, timeout + 7),
         )
         resp.raise_for_status()
         results = resp.json().get("result", [])
@@ -126,6 +142,10 @@ def _auto_exit_cause(reason):
     """Translates enforce_exits()'s technical reason string into one plain
     sentence. Matched by prefix against the actual rule, not re-derived, so
     it can't say something different from what really happened."""
+    if reason.startswith("profit lock"):
+        return ("It had made a solid gain, so the safety net switched to a tighter "
+                 "trail to protect that profit — then it turned and dropped back, "
+                 "so it sold rather than risk giving the gain back.")
     if reason.startswith("trailing stop"):
         return ("It had climbed, then turned and started dropping back — the "
                  "automatic safety net locked in the gain before it fell further.")
@@ -219,7 +239,8 @@ def notify_status(total_now, total_at_start, pool_balance, regime_lines, agents_
     framed around performance since this run started and what's actually held
     this second, not a rolling day window.
 
-    agents_data: list of {name, cash, invested, positions: [{symbol, pnl_pct}]}."""
+    agents_data: list of {name, cash, invested, positions: [{symbol, pnl_pct,
+    pnl_dollar, stop_price, stop_pct, room_to_stop_pct, profit_locked}]}."""
     lines = ["\U0001F4CA <b>Status right now</b>", ""]
 
     if total_at_start:
@@ -242,20 +263,27 @@ def notify_status(total_now, total_at_start, pool_balance, regime_lines, agents_
     lines.append("")
     lines.append("<b>Coins owned:</b>")
     table_lines = []
+    any_locked = False
     for a in agents_data:
         if not a["positions"]:
             continue
         if table_lines:
             table_lines.append("")
         table_lines.append(_esc(a["name"]))
-        table_lines.append(f"{'Coin':<6}{'%':>8}{'$':>10}")
+        table_lines.append(f"{'Coin':<6}{'%':>7}{'$':>9}{'Sells@':>10}")
         for p in a["positions"]:
             coin = _coin_name(p["symbol"])
-            table_lines.append(f"{coin:<6}{p['pnl_pct']:>+7.1f}%{p['pnl_dollar']:>+10.2f}")
+            lock_mark = "*" if p.get("profit_locked") else ""
+            any_locked = any_locked or p.get("profit_locked")
+            table_lines.append(f"{coin:<6}{p['pnl_pct']:>+6.1f}%{p['pnl_dollar']:>+9.2f}"
+                                f"{p['stop_price']:>9.4f}{lock_mark}")
     if table_lines:
         # <pre> is Telegram's only way to render fixed-width columns that
         # actually line up - plain text collapses the padding spaces.
         lines.append("<pre>" + "\n".join(table_lines) + "</pre>")
+        lines.append("<i>Sells@ is the price that would trigger an automatic sell right now"
+                      + (" — * means a real gain is already locked in with a tighter trail"
+                         if any_locked else "") + ".</i>")
     else:
         lines.append("Nothing right now - it's all sitting as cash.")
 
